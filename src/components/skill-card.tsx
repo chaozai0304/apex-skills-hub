@@ -1,9 +1,11 @@
 import Link from "next/link";
 
+import type { Locale } from "@/lib/i18n";
+import { pick } from "@/lib/i18n";
 import type { CatalogItem } from "@/lib/types";
 import { formatNumber, formatRelativeDate } from "@/lib/utils";
 
-export function SkillCard({ item }: { item: CatalogItem }) {
+export function SkillCard({ item, locale = "zh" }: { item: CatalogItem; locale?: Locale }) {
   return (
     <Link
       href={`/skills/${item.slug}`}
@@ -17,7 +19,7 @@ export function SkillCard({ item }: { item: CatalogItem }) {
             </span>
             {item.featured ? (
               <span className="rounded-full bg-violet-50 px-2.5 py-1 text-xs font-semibold text-violet-700">
-                推荐
+                {pick(locale, "推荐", "Featured")}
               </span>
             ) : null}
           </div>
@@ -29,7 +31,7 @@ export function SkillCard({ item }: { item: CatalogItem }) {
         </div>
 
         <div className="rounded-2xl bg-slate-50 px-3 py-2 text-right text-xs text-slate-500">
-          <div>版本</div>
+          <div>{pick(locale, "版本", "Version")}</div>
           <div className="mt-1 font-semibold text-slate-900">{item.version}</div>
         </div>
       </div>
@@ -46,20 +48,20 @@ export function SkillCard({ item }: { item: CatalogItem }) {
 
       <div className="mt-auto grid grid-cols-2 gap-4 border-t border-slate-100 pt-5 text-sm text-slate-500 md:grid-cols-4">
         <div>
-          <div>下载量</div>
-          <div className="mt-1 font-semibold text-slate-900">{formatNumber(item.downloads)}</div>
+          <div>{pick(locale, "下载量", "Downloads")}</div>
+          <div className="mt-1 font-semibold text-slate-900">{formatNumber(item.downloads, locale)}</div>
         </div>
         <div>
-          <div>当前安装</div>
-          <div className="mt-1 font-semibold text-slate-900">{formatNumber(item.installsCurrent)}</div>
+          <div>{pick(locale, "当前安装", "Current installs")}</div>
+          <div className="mt-1 font-semibold text-slate-900">{formatNumber(item.installsCurrent, locale)}</div>
         </div>
         <div>
-          <div>文件数</div>
+          <div>{pick(locale, "文件数", "Files")}</div>
           <div className="mt-1 font-semibold text-slate-900">{item.fileCount}</div>
         </div>
         <div>
-          <div>更新时间</div>
-          <div className="mt-1 font-semibold text-slate-900">{formatRelativeDate(item.updatedAt)}</div>
+          <div>{pick(locale, "更新时间", "Updated")}</div>
+          <div className="mt-1 font-semibold text-slate-900">{formatRelativeDate(item.updatedAt, locale)}</div>
         </div>
       </div>
     </Link>

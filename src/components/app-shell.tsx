@@ -1,16 +1,23 @@
 import Link from "next/link";
 
+import { LocaleSwitcher } from "@/components/locale-switcher";
 import { getCurrentUser, isAdminAuthenticated } from "@/lib/auth";
+import { pick } from "@/lib/i18n";
+import { getCurrentLocale } from "@/lib/i18n-server";
 
 export async function AppShell({ children }: { children: React.ReactNode }) {
-  const [user, isAdmin] = await Promise.all([getCurrentUser(), isAdminAuthenticated()]);
+  const [user, isAdmin, locale] = await Promise.all([
+    getCurrentUser(),
+    isAdminAuthenticated(),
+    getCurrentLocale(),
+  ]);
   const navItems = [
-    { href: "/", label: "首页" },
-    { href: "/publish", label: "发布" },
-    { href: "/search", label: "搜索" },
-    { href: "/leaderboard", label: "排行榜" },
-    ...(isAdmin ? [{ href: "/admin", label: "控制台" }] : []),
-    ...(user ? [{ href: "/my-skills", label: "我的技能" }] : []),
+    { href: "/", label: pick(locale, "首页", "Home") },
+    { href: "/publish", label: pick(locale, "发布", "Publish") },
+    { href: "/search", label: pick(locale, "搜索", "Search") },
+    { href: "/leaderboard", label: pick(locale, "排行榜", "Leaderboard") },
+    ...(isAdmin ? [{ href: "/admin", label: pick(locale, "控制台", "Console") }] : []),
+    ...(user ? [{ href: "/my-skills", label: pick(locale, "我的技能", "My Skills") }] : []),
   ];
 
   return (
@@ -25,7 +32,7 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
               <div className="text-sm font-semibold tracking-[0.2em] text-sky-700">
                 APEX SKILLS HUB
               </div>
-              <div className="text-xs text-slate-500">企业级 Skill Registry 平台</div>
+              <div className="text-xs text-slate-500">{pick(locale, "企业级 Skill Registry 平台", "Enterprise Skill Registry")}</div>
             </div>
           </Link>
 
@@ -39,6 +46,8 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
             </nav>
 
             <div className="flex items-center gap-3">
+              <LocaleSwitcher locale={locale} />
+
               {user ? (
                 <>
                   <div className="rounded-full bg-slate-100 px-4 py-2 text-sm font-medium text-slate-700">
@@ -47,29 +56,29 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
                   <form action="/api/logout" method="post">
                     <input type="hidden" name="next" value="/" />
                     <button type="submit" className="button-secondary h-10 px-4 text-sm">
-                      退出
+                      {pick(locale, "退出", "Sign out")}
                     </button>
                   </form>
                 </>
               ) : isAdmin ? (
                 <>
                   <div className="rounded-full bg-slate-100 px-4 py-2 text-sm font-medium text-slate-700">
-                    超级管理员
+                    {pick(locale, "超级管理员", "Super Admin")}
                   </div>
                   <form action="/api/logout" method="post">
                     <input type="hidden" name="next" value="/" />
                     <button type="submit" className="button-secondary h-10 px-4 text-sm">
-                      退出
+                      {pick(locale, "退出", "Sign out")}
                     </button>
                   </form>
                 </>
               ) : (
                 <>
                   <Link href="/login" className="button-primary h-10 px-4 text-sm">
-                    用户登录
+                    {pick(locale, "用户登录", "User Login")}
                   </Link>
                   <Link href="/admin/login" className="button-secondary h-10 px-4 text-sm">
-                    管理员登录
+                    {pick(locale, "管理员登录", "Admin Login")}
                   </Link>
                 </>
               )}
@@ -84,8 +93,8 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
 
       <footer className="border-t border-slate-200/80 bg-white/70">
         <div className="mx-auto flex w-full max-w-7xl flex-col gap-4 px-6 py-8 text-sm text-slate-500 lg:flex-row lg:items-center lg:justify-between lg:px-10">
-          <p>© 2026 Apex Skills Hub · 支持在线发布、审核发布、详情展示与 ClawHub Registry 安装。</p>
-          <p>建议部署在内网网关或统一域名下，便于团队通过 registry 统一接入。</p>
+          <p>{pick(locale, "© 2026 Apex Skills Hub · 支持在线发布、审核发布、详情展示与 ClawHub Registry 安装。", "© 2026 Apex Skills Hub · Built for publishing, reviewing, browsing, and installing skills through ClawHub Registry.")}</p>
+          <p>{pick(locale, "建议部署在内网网关或统一域名下，便于团队通过 registry 统一接入。", "Recommended for deployment behind an internal gateway or unified domain so teams can consume the registry consistently.")}</p>
         </div>
       </footer>
     </div>

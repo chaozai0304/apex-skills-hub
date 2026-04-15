@@ -2,14 +2,19 @@
 
 import { useState } from "react";
 
+import type { Locale } from "@/lib/i18n";
+import { pick } from "@/lib/i18n";
+
 export function InstallCommand({
   command,
   note,
   variant = "dark",
+  locale = "zh",
 }: {
   command: string;
   note?: string;
   variant?: "dark" | "light";
+  locale?: Locale;
 }) {
   const [copied, setCopied] = useState(false);
   const isLight = variant === "light";
@@ -36,7 +41,7 @@ export function InstallCommand({
             CLI Install Command
           </div>
           <div className={`mt-2 text-sm ${isLight ? "text-slate-500" : "text-slate-300"}`}>
-            这是安装命令卡片，不是按钮；复制后可直接在终端执行。
+            {pick(locale, "这是安装命令卡片，不是按钮；复制后可直接在终端执行。", "This is an install command card, not a button. Copy it and run it directly in your terminal.")}
           </div>
         </div>
         <button
@@ -46,7 +51,7 @@ export function InstallCommand({
             ? "rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50"
             : "rounded-full border border-slate-700 px-4 py-2 text-xs font-semibold text-slate-200 transition hover:border-slate-500 hover:bg-white/5"}
         >
-          {copied ? "已复制" : "复制命令"}
+          {copied ? pick(locale, "已复制", "Copied") : pick(locale, "复制命令", "Copy command")}
         </button>
       </div>
       <pre

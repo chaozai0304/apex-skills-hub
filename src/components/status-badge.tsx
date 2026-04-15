@@ -1,4 +1,5 @@
 import type { SubmissionStatus } from "@/lib/types";
+import type { Locale } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 const styleMap: Record<SubmissionStatus, string> = {
@@ -7,13 +8,13 @@ const styleMap: Record<SubmissionStatus, string> = {
   rejected: "bg-rose-100 text-rose-700 ring-rose-200",
 };
 
-const labelMap: Record<SubmissionStatus, string> = {
-  pending: "待审批",
-  published: "已发布",
-  rejected: "已驳回",
-};
+export function StatusBadge({ status, locale = "zh" }: { status: SubmissionStatus; locale?: Locale }) {
+  const labelMap: Record<SubmissionStatus, string> = {
+    pending: locale === "en" ? "Pending" : "待审批",
+    published: locale === "en" ? "Published" : "已发布",
+    rejected: locale === "en" ? "Rejected" : "已驳回",
+  };
 
-export function StatusBadge({ status }: { status: SubmissionStatus }) {
   return (
     <span
       className={cn(

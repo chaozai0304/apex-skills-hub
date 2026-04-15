@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { useState } from "react";
 
+import type { Locale } from "@/lib/i18n";
+import { pick } from "@/lib/i18n";
 import type { SkillEngagementSummary } from "@/lib/types";
 
 type SkillEngagementPanelProps = {
@@ -10,6 +12,7 @@ type SkillEngagementPanelProps = {
   initialSummary: SkillEngagementSummary;
   isLoggedIn: boolean;
   layout?: "full" | "compact";
+  locale?: Locale;
 };
 
 export function SkillEngagementPanel({
@@ -17,6 +20,7 @@ export function SkillEngagementPanel({
   initialSummary,
   isLoggedIn,
   layout = "full",
+  locale = "zh",
 }: SkillEngagementPanelProps) {
   const [summary, setSummary] = useState(initialSummary);
   const [busy, setBusy] = useState<"favorite" | "rating" | null>(null);
@@ -63,33 +67,33 @@ export function SkillEngagementPanel({
 
   return (
     <div className={`surface-card ${compact ? "p-5" : "p-6"}`}>
-      <div className="section-eyebrow">收藏与评分</div>
+      <div className="section-eyebrow">{pick(locale, "收藏与评分", "Favorites & Ratings")}</div>
       <h3 className={`mt-3 font-semibold tracking-tight text-slate-950 ${compact ? "text-xl" : "text-2xl"}`}>
-        社区互动
+        {pick(locale, "社区互动", "Community")}
       </h3>
 
       <div className={`mt-6 grid gap-4 ${compact ? "sm:grid-cols-2 xl:grid-cols-1" : "md:grid-cols-3"}`}>
         <div className="rounded-3xl bg-slate-50 px-5 py-4">
-          <div className="text-xs uppercase tracking-[0.24em] text-slate-400">平均评分</div>
+          <div className="text-xs uppercase tracking-[0.24em] text-slate-400">{pick(locale, "平均评分", "Average Rating")}</div>
           <div className="mt-2 text-2xl font-semibold text-slate-950">{summary.averageRating || 0}</div>
-          <div className="mt-1 text-sm text-slate-500">共 {summary.ratingCount} 次评分</div>
+          <div className="mt-1 text-sm text-slate-500">{pick(locale, `共 ${summary.ratingCount} 次评分`, `${summary.ratingCount} rating(s)`)}</div>
         </div>
         <div className="rounded-3xl bg-slate-50 px-5 py-4">
-          <div className="text-xs uppercase tracking-[0.24em] text-slate-400">收藏人数</div>
+          <div className="text-xs uppercase tracking-[0.24em] text-slate-400">{pick(locale, "收藏人数", "Favorites")}</div>
           <div className="mt-2 text-2xl font-semibold text-slate-950">{summary.favoriteCount}</div>
-          <div className="mt-1 text-sm text-slate-500">当前技能被加入收藏的次数</div>
+          <div className="mt-1 text-sm text-slate-500">{pick(locale, "当前技能被加入收藏的次数", "How many times this skill has been added to favorites")}</div>
         </div>
         <div className="rounded-3xl bg-slate-50 px-5 py-4">
-          <div className="text-xs uppercase tracking-[0.24em] text-slate-400">我的评分</div>
+          <div className="text-xs uppercase tracking-[0.24em] text-slate-400">{pick(locale, "我的评分", "My Rating")}</div>
           <div className="mt-2 text-2xl font-semibold text-slate-950">{summary.currentUserRating ?? "-"}</div>
-          <div className="mt-1 text-sm text-slate-500">登录后可更新你的评价</div>
+          <div className="mt-1 text-sm text-slate-500">{pick(locale, "登录后可更新你的评价", "Sign in to update your rating")}</div>
         </div>
       </div>
 
       {isLoggedIn ? (
         <div className={`mt-6 flex flex-col gap-4 rounded-3xl border border-slate-200 bg-slate-50 px-5 py-5 ${compact ? "" : "md:flex-row md:items-center md:justify-between"}`}>
           <div>
-            <div className="text-sm font-medium text-slate-700">给这个技能打分</div>
+            <div className="text-sm font-medium text-slate-700">{pick(locale, "给这个技能打分", "Rate this skill")}</div>
             <div className="mt-2 flex flex-wrap gap-2">
               {[1, 2, 3, 4, 5].map((rating) => {
                 const active = (summary.currentUserRating ?? 0) >= rating;
@@ -122,14 +126,14 @@ export function SkillEngagementPanel({
                 : "bg-slate-950 text-white hover:bg-slate-800"
             }`}
           >
-            {summary.isFavorited ? "已收藏，点击取消" : "加入收藏"}
+            {summary.isFavorited ? pick(locale, "已收藏，点击取消", "Favorited · click to remove") : pick(locale, "加入收藏", "Add to favorites")}
           </button>
         </div>
       ) : (
         <div className="mt-6 rounded-3xl border border-dashed border-slate-300 bg-slate-50 px-5 py-5 text-sm text-slate-600">
-          登录后即可收藏技能并给出评分。
+          {pick(locale, "登录后即可收藏技能并给出评分。", "Sign in to favorite this skill and leave a rating.")}
           <Link href={loginHref} className={`font-semibold text-sky-700 hover:text-sky-800 ${compact ? "mt-2 inline-flex" : "ml-2"}`}>
-            去登录 →
+            {pick(locale, "去登录 →", "Go to sign in →")}
           </Link>
         </div>
       )}

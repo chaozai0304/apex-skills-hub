@@ -1,31 +1,24 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+
+import { getCurrentLocale } from "@/lib/i18n-server";
 import "./globals.css";
-
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
 
 export const metadata: Metadata = {
   title: "Apex Skills Hub",
-  description: "企业级 Skills Hub 平台，支持在线上传、审核发布、详情展示与 ClawHub Registry 安装。",
+  description: "Enterprise-ready Skills Hub for publishing, reviewing, browsing, and installing skills with ClawHub Registry support. 企业级 Skills Hub 平台，支持在线上传、审核发布、详情展示与 ClawHub Registry 安装。",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const locale = await getCurrentLocale();
+
   return (
     <html
-      lang="zh-CN"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      lang={locale === "en" ? "en" : "zh-CN"}
+      className="h-full antialiased"
     >
       <body className="min-h-full flex flex-col bg-slate-50 text-slate-950">{children}</body>
     </html>
