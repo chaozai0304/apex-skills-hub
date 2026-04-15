@@ -1,0 +1,239 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "verify-skills-hub",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"build"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "lint-skills-hub",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"lint"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "validate-build-and-lint",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"build",
+				"&&",
+				"npm",
+				"run",
+				"lint"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "install-prisma-deps",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"install",
+				"@prisma/client",
+				"prisma",
+				"tsx",
+				"--save-dev=false"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "install-prisma-cli",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"install",
+				"-D",
+				"prisma"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "generate-prisma-client",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"db:generate"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "install-prisma-6",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"install"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "force-prisma-6",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"install",
+				"@prisma/client@6.16.3",
+				"-D",
+				"prisma@6.16.3"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "force-prisma-6-ignore-scripts",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"install",
+				"--ignore-scripts",
+				"@prisma/client@6.16.3",
+				"prisma@6.16.3"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "validate-postgres-build",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"build",
+				"&&",
+				"npm",
+				"run",
+				"lint"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "revalidate-postgres-build",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"build",
+				"&&",
+				"npm",
+				"run",
+				"lint"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "verify-postgres-data",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"-e",
+				"const {PrismaClient}=require('@prisma/client'); const db=new PrismaClient(); (async()=>{ const [submissions,users,favorites,ratings,logs]=await Promise.all([db.submission.findMany({select:{slug:true,version:true,status:true},orderBy:{slug:'asc'}}),db.user.findMany({select:{username:true,disabled:true},orderBy:{username:'asc'}}),db.favorite.count(),db.rating.count(),db.approvalLog.count()]); console.log(JSON.stringify({submissions,users,favorites,ratings,logs},null,2)); await db.$disconnect(); })().catch(async(err)=>{ console.error(err); await db.$disconnect(); process.exit(1); });"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "verify-postgres-data-script",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"scripts/verify-postgres.mjs"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "final-db-verify",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"db:verify",
+				"&&",
+				"npm",
+				"run",
+				"lint"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "build-app",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"build"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-admin-fixes",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"build"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-skill-layout-fixes",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"build"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build-skill-detail-redesign",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"build"
+			],
+			"isBackground": false,
+			"group": "build"
+		}
+	]
+}

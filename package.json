@@ -1,0 +1,43 @@
+{
+  "name": "apex-skills-hub",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "postinstall": "prisma generate",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "db:generate": "prisma generate",
+    "db:migrate:dev": "prisma migrate dev",
+    "db:migrate:deploy": "prisma migrate deploy",
+    "db:import-json": "node scripts/import-json-to-postgres.mjs",
+    "db:bootstrap": "node scripts/bootstrap-database.mjs",
+    "db:verify": "node scripts/verify-postgres.mjs",
+    "docker:build": "docker build -t apex-skills-hub .",
+    "docker:up": "docker compose up -d --build"
+  },
+  "dependencies": {
+    "clsx": "^2.1.1",
+    "gray-matter": "^4.0.3",
+    "jszip": "^3.10.1",
+    "lucide-react": "^1.8.0",
+    "next": "16.2.3",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
+  },
+  "devDependencies": {
+    "@prisma/client": "^6.16.3",
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.2.3",
+    "prisma": "^6.16.3",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  }
+}
