@@ -1,11 +1,12 @@
-import { Activity, ShieldCheck, Trash2, UserRoundCog, Users } from "lucide-react";
+import { Activity, RefreshCw, ShieldCheck, Trash2, UserRoundCog, Users } from "lucide-react";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { AppShell } from "@/components/app-shell";
+import { GitLabSyncForm } from "@/components/gitlab-sync-form";
 import { StatusBadge } from "@/components/status-badge";
 import { isAdminAuthenticated } from "@/lib/auth";
-import { getDashboardData } from "@/lib/store";
+import { getDashboardData, getGitLabSyncConfigSummary } from "@/lib/store";
 import { formatDateTime } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
@@ -15,6 +16,7 @@ const ADMIN_TABS = [
   { key: "users", label: "用户管理", icon: UserRoundCog },
   { key: "skills", label: "技能列表", icon: Trash2 },
   { key: "logs", label: "审批日志", icon: Activity },
+  { key: "sync", label: "同步配置", icon: RefreshCw },
 ] as const;
 
 type AdminTabKey = (typeof ADMIN_TABS)[number]["key"];
@@ -26,6 +28,8 @@ const LOG_ACTION_LABELS: Record<string, string> = {
   "skill-approved": "审批发布",
   "skill-rejected": "驳回技能",
   "skill-deleted": "删除技能",
+  "gitlab-sync-succeeded": "同步成功",
+  "gitlab-sync-failed": "同步失败",
   "user-created": "创建用户",
   "user-enabled": "启用用户",
   "user-disabled": "停用用户",
@@ -39,6 +43,13 @@ type AdminPageProps = {
     userError?: string;
     skillDeleted?: string;
     skillError?: string;
+    syncSaved?: string;
+    syncError?: string;
+    syncTestSuccess?: string;
+    syncTestError?: string;
+    syncTokenReset?: string;
+    gitlabSyncSuccess?: string;
+    gitlabSyncError?: string;
     tab?: string;
     q?: string;
     page?: string;
@@ -52,14 +63,21 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
   }
 
   const resolvedSearchParams = await searchParams;
-  const { pending, recentPublished, users, logs, allSkills } = await getDashboardData();
+  const [{ pending, recentPublished, users, logs, allSkills }, gitLabSync] = await Promise.all([
+    getDashboardData(),
+    getGitLabSyncConfigSummary(),
+  ]);
   const activeTab = isAdminTabKey(resolvedSearchParams.tab) ? resolvedSearchParams.tab : "pending";
   const query = resolvedSearchParams.q?.trim() ?? "";
   const page = normalizePage(resolvedSearchParams.page);
 
   const pendingItems = applyPendingQuery(pending, query);
   const userItems = applyUserQuery(users, query);
-  const skillItems = applySkillQuery(allSkills, query);
+  const allSkillGroups = groupManagedSkills(allSkills);
+  const matchedSkillSlugs = new Set(applySkillQuery(allSkills, query).map((item) => item.slug));
+  const skillItems = groupManagedSkills(
+    query ? allSkills.filter((item) => matchedSkillSlugs.has(item.slug)) : allSkills,
+  );
   const logItems = applyLogQuery(logs, query);
 
   const currentItemsCountByTab: Record<AdminTabKey, number> = {
@@ -67,6 +85,7 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
     users: userItems.length,
     skills: skillItems.length,
     logs: logItems.length,
+    sync: 1,
   };
 
   const paginatedPending = paginate(pendingItems, page, PAGE_SIZE);
@@ -80,7 +99,9 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
         ? { page: paginatedUsers.page, totalPages: paginatedUsers.totalPages }
         : activeTab === "skills"
           ? { page: paginatedSkills.page, totalPages: paginatedSkills.totalPages }
-          : { page: paginatedLogs.page, totalPages: paginatedLogs.totalPages };
+            : activeTab === "logs"
+              ? { page: paginatedLogs.page, totalPages: paginatedLogs.totalPages }
+              : { page: 1, totalPages: 1 };
 
   const activeCount = currentItemsCountByTab[activeTab];
   const activeTitle =
@@ -90,16 +111,20 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
         ? "普通用户管理"
         : activeTab === "skills"
           ? "技能列表管理"
-          : "审批日志";
+          : activeTab === "logs"
+            ? "审批日志"
+            : "GitLab 同步配置";
   const activeDescription =
     activeTab === "pending"
       ? "集中处理待审批技能，支持按标题、slug、作者进行搜索并分页查看。"
       : activeTab === "users"
         ? "集中查看普通用户状态，支持搜索、分页和行级启停操作。"
         : activeTab === "skills"
-          ? "按列表方式维护已提交的技能记录，支持搜索、分页和删除操作。"
-          : "按时间倒序查看关键操作日志，支持检索操作者、动作、目标与消息内容。";
-      const currentAdminHref = buildAdminHref(activeTab, query, activePagination.page);
+          ? "按 slug 合并维护技能，支持查看多个版本，并可在删除时选择是否同步清理 GitLab 镜像目录。"
+          : activeTab === "logs"
+            ? "按时间倒序查看关键操作日志，支持检索操作者、动作、目标与消息内容。"
+            : "配置一个 GitLab 目录页地址和授权码，审批发布成功后会把技能文件自动同步到对应目录；同名技能会直接更新。";
+  const currentAdminHref = buildAdminHref(activeTab, query, activePagination.page);
 
   return (
     <AppShell>
@@ -115,7 +140,7 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
         {[
           { label: "待审批", value: String(pending.length), icon: ShieldCheck },
           { label: "已建用户", value: String(users.length), icon: Users },
-          { label: "可管理技能", value: String(allSkills.length), icon: Trash2 },
+          { label: "可管理技能", value: String(allSkillGroups.length), icon: Trash2 },
           { label: "最近日志", value: String(logs.length), icon: Activity },
         ].map((item) => (
           <div key={item.label} className="surface-card p-5">
@@ -148,13 +173,55 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
 
       {resolvedSearchParams.skillDeleted ? (
         <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-4 text-sm text-emerald-700">
-          技能记录已删除。
+          {resolvedSearchParams.skillDeleted}
         </div>
       ) : null}
 
       {resolvedSearchParams.skillError ? (
         <div className="rounded-2xl border border-rose-200 bg-rose-50 px-5 py-4 text-sm text-rose-700">
           {resolvedSearchParams.skillError}
+        </div>
+      ) : null}
+
+      {resolvedSearchParams.syncSaved ? (
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-4 text-sm text-emerald-700">
+          GitLab 同步配置已保存。
+        </div>
+      ) : null}
+
+      {resolvedSearchParams.syncError ? (
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 px-5 py-4 text-sm text-rose-700">
+          {resolvedSearchParams.syncError}
+        </div>
+      ) : null}
+
+      {resolvedSearchParams.syncTestSuccess ? (
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-4 text-sm text-emerald-700">
+          {resolvedSearchParams.syncTestSuccess}
+        </div>
+      ) : null}
+
+      {resolvedSearchParams.syncTestError ? (
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 px-5 py-4 text-sm text-rose-700">
+          {resolvedSearchParams.syncTestError}
+        </div>
+      ) : null}
+
+      {resolvedSearchParams.syncTokenReset ? (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-700">
+          GitLab Token 已重置，自动同步已暂停；请重新填写后保存。
+        </div>
+      ) : null}
+
+      {resolvedSearchParams.gitlabSyncSuccess ? (
+        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-4 text-sm text-emerald-700">
+          {resolvedSearchParams.gitlabSyncSuccess}
+        </div>
+      ) : null}
+
+      {resolvedSearchParams.gitlabSyncError ? (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-700">
+          {resolvedSearchParams.gitlabSyncError}
         </div>
       ) : null}
 
@@ -182,8 +249,10 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
                     : tab.key === "users"
                       ? users.length
                       : tab.key === "skills"
-                        ? allSkills.length
-                        : logs.length}
+                        ? allSkillGroups.length
+                        : tab.key === "logs"
+                          ? logs.length
+                          : 1}
                 </span>
               </Link>
             );
@@ -196,19 +265,21 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
             <p className="mt-2 text-sm leading-7 text-slate-500">{activeDescription}</p>
           </div>
 
-          <form className="flex w-full max-w-xl gap-3" action="/admin" method="get">
-            <input type="hidden" name="tab" value={activeTab} />
-            <input
-              type="text"
-              name="q"
-              defaultValue={query}
-              placeholder={getSearchPlaceholder(activeTab)}
-              className="field-input h-12 flex-1"
-            />
-            <button type="submit" className="button-primary h-12 px-5 text-sm">
-              搜索
-            </button>
-          </form>
+          {activeTab !== "sync" ? (
+            <form className="flex w-full max-w-xl gap-3" action="/admin" method="get">
+              <input type="hidden" name="tab" value={activeTab} />
+              <input
+                type="text"
+                name="q"
+                defaultValue={query}
+                placeholder={getSearchPlaceholder(activeTab)}
+                className="field-input h-12 flex-1"
+              />
+              <button type="submit" className="button-primary h-12 px-5 text-sm">
+                搜索
+              </button>
+            </form>
+          ) : null}
         </div>
 
         {activeTab === "users" ? (
@@ -240,6 +311,68 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
           </div>
         ) : null}
 
+        {activeTab === "sync" ? (
+          <div className="mt-6 grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
+            <div className="rounded-[1.5rem] border border-slate-200 bg-white p-6">
+              <h3 className="text-lg font-semibold text-slate-950">GitLab 同步参数</h3>
+              <p className="mt-2 text-sm leading-7 text-slate-500">
+                请填写 GitLab 仓库目录页地址，例如 <code>http://host/group/project/-/tree/master/.github/skills</code>。
+                系统会在该目录下以 <code>{`<slug>/`}</code> 为子目录同步技能文件。
+              </p>
+
+              {gitLabSync.issue ? (
+                <div className={`mt-4 rounded-2xl border px-4 py-3 text-sm ${gitLabSync.storageReady === false ? "border-amber-200 bg-amber-50 text-amber-800" : "border-rose-200 bg-rose-50 text-rose-700"}`}>
+                  {gitLabSync.issue}
+                </div>
+              ) : null}
+
+              <GitLabSyncForm summary={gitLabSync} />
+            </div>
+
+            <div className="rounded-[1.5rem] border border-slate-200 bg-slate-50/80 p-6">
+              <h3 className="text-lg font-semibold text-slate-950">当前状态</h3>
+              <div className="mt-4 space-y-3 text-sm text-slate-600">
+                <div className="flex items-center justify-between gap-4 rounded-2xl bg-white px-4 py-3">
+                  <span>同步状态</span>
+                  <span className={`rounded-full px-3 py-1 text-xs font-semibold ${gitLabSync.enabled ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-600"}`}>
+                    {gitLabSync.enabled ? "已启用" : "未启用"}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-4 rounded-2xl bg-white px-4 py-3">
+                  <span>Token</span>
+                  <div className="flex items-center gap-3">
+                    {gitLabSync.maskedToken ? <span className="text-xs text-slate-500">{gitLabSync.maskedToken}</span> : null}
+                    <span className={`rounded-full px-3 py-1 text-xs font-semibold ${gitLabSync.hasToken ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
+                      {gitLabSync.hasToken ? "已保存" : "未配置"}
+                    </span>
+                  </div>
+                </div>
+                <div className="rounded-2xl bg-white px-4 py-3">
+                  <div className="text-xs uppercase tracking-[0.18em] text-slate-400">Project</div>
+                  <div className="mt-2 font-medium text-slate-900">{gitLabSync.projectPath || "尚未解析"}</div>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-1">
+                  <div className="rounded-2xl bg-white px-4 py-3">
+                    <div className="text-xs uppercase tracking-[0.18em] text-slate-400">Branch</div>
+                    <div className="mt-2 font-medium text-slate-900">{gitLabSync.branch || "尚未解析"}</div>
+                  </div>
+                  <div className="rounded-2xl bg-white px-4 py-3">
+                    <div className="text-xs uppercase tracking-[0.18em] text-slate-400">Base Path</div>
+                    <div className="mt-2 font-medium text-slate-900 break-all">{gitLabSync.basePath || "/"}</div>
+                  </div>
+                </div>
+                <div className="rounded-2xl bg-white px-4 py-3">
+                  <div className="text-xs uppercase tracking-[0.18em] text-slate-400">最近更新</div>
+                  <div className="mt-2 font-medium text-slate-900">{gitLabSync.updatedAt ? formatDateTime(gitLabSync.updatedAt) : "尚未保存配置"}</div>
+                </div>
+                <div className="rounded-2xl bg-white px-4 py-3">
+                  <div className="text-xs uppercase tracking-[0.18em] text-slate-400">Storage</div>
+                  <div className="mt-2 font-medium text-slate-900">{gitLabSync.storageReady === false ? "等待数据库迁移" : "配置表可用"}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : (
         <div className="mt-6 overflow-x-auto rounded-[1.5rem] border border-slate-200">
           {activeTab === "pending" ? (
             <table className="min-w-full divide-y divide-slate-200 text-sm text-slate-600">
@@ -348,22 +481,58 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
               <tbody className="divide-y divide-slate-100 bg-white/90">
                 {paginatedSkills.items.length ? (
                   paginatedSkills.items.map((item) => (
-                    <tr key={item.id} className="align-top hover:bg-slate-50/70">
+                    <tr key={item.slug} className="align-top hover:bg-slate-50/70">
                       <td className="px-4 py-4">
                         <div className="font-semibold text-slate-950">{item.displayName}</div>
-                        <div className="mt-1 text-xs text-slate-500">{item.slug} · {item.version}</div>
+                        <div className="mt-1 text-xs text-slate-500">
+                          {item.slug} · 最新 {item.latestVersion} · 共 {item.versionCount} 个版本
+                        </div>
                         <p className="mt-2 max-w-md text-sm leading-6 text-slate-600">{item.summary}</p>
+
+                        <details className="mt-4 rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
+                          <summary className="cursor-pointer list-none text-sm font-semibold text-slate-700">
+                            查看版本明细
+                          </summary>
+                          <div className="mt-3 space-y-3">
+                            {item.versions.map((version) => (
+                              <div key={version.id} className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                                <div className="flex flex-wrap items-center justify-between gap-3">
+                                  <div>
+                                    <div className="font-medium text-slate-900">{version.version}</div>
+                                    <div className="mt-1 text-xs text-slate-500">
+                                      {formatDateTime(version.updatedAt)} · 文件数 {version.fileCount} · 下载 {version.downloads}
+                                    </div>
+                                  </div>
+                                  <StatusBadge status={version.status} />
+                                </div>
+                                {version.reviewNotes ? (
+                                  <p className="mt-3 text-xs leading-6 text-slate-500">审核备注：{version.reviewNotes}</p>
+                                ) : null}
+                              </div>
+                            ))}
+                          </div>
+                        </details>
                       </td>
-                      <td className="px-4 py-4 whitespace-nowrap"><StatusBadge status={item.status} /></td>
+                      <td className="px-4 py-4 whitespace-nowrap">
+                        <StatusBadge status={item.status} />
+                        <div className="mt-2 text-xs text-slate-500">
+                          已发布 {item.publishedCount} · 待审批 {item.pendingCount} · 已驳回 {item.rejectedCount}
+                        </div>
+                      </td>
                       <td className="px-4 py-4 whitespace-nowrap">{item.category}</td>
                       <td className="px-4 py-4 whitespace-nowrap text-slate-500">{formatDateTime(item.updatedAt)}</td>
-                      <td className="px-4 py-4 whitespace-nowrap">{item.downloads}</td>
-                      <td className="px-4 py-4 whitespace-nowrap">
-                        <form action={`/api/admin/skills/${item.id}/delete`} method="post">
+                      <td className="px-4 py-4 whitespace-nowrap">{item.totalDownloads}</td>
+                      <td className="px-4 py-4 min-w-[18rem]">
+                        <form action={`/api/admin/skills/${item.id}/delete`} method="post" className="grid gap-3">
                           <input type="hidden" name="redirectTo" value={currentAdminHref} />
+                          <label className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">
+                            <input type="checkbox" name="deleteFromGitLab" className="mt-0.5 h-4 w-4 rounded border-slate-300" />
+                            <span>同时删除 GitLab 仓库中的同名技能目录（默认不删除，仅勾选时执行）</span>
+                          </label>
+                          <div className="text-xs leading-5 text-slate-500">删除将移除该技能的全部版本记录及本地归档文件。</div>
                           <button type="submit" className="inline-flex h-10 items-center justify-center gap-2 rounded-2xl bg-rose-600 px-4 text-sm font-semibold text-white transition hover:bg-rose-500">
                             <Trash2 className="h-4 w-4" />
-                            删除
+                            删除整组技能
                           </button>
                         </form>
                       </td>
@@ -409,6 +578,7 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
             </table>
           ) : null}
         </div>
+        )}
 
         <div className="mt-5 flex flex-col gap-4 border-t border-slate-100 pt-5 sm:flex-row sm:items-center sm:justify-between">
           <div className="text-sm text-slate-500">
@@ -497,6 +667,8 @@ function getSearchPlaceholder(tab: AdminTabKey) {
       return "搜索技能名、slug、分类";
     case "logs":
       return "搜索动作、操作者、目标或说明";
+    case "sync":
+      return "同步配置不需要搜索";
   }
 }
 
@@ -523,6 +695,42 @@ function applySkillQuery(items: Awaited<ReturnType<typeof getDashboardData>>["al
   return items.filter((item) =>
     includesKeyword([item.displayName, item.slug, item.category, item.summary, ...item.tags], query),
   );
+}
+
+function groupManagedSkills(items: Awaited<ReturnType<typeof getDashboardData>>["allSkills"]) {
+  const groups = new Map<string, Awaited<ReturnType<typeof getDashboardData>>["allSkills"]>();
+
+  for (const item of items) {
+    const existing = groups.get(item.slug) ?? [];
+    existing.push(item);
+    groups.set(item.slug, existing);
+  }
+
+  return [...groups.values()]
+    .map((versions) => {
+      const sortedVersions = [...versions].sort(
+        (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+      );
+      const latest = sortedVersions[0];
+
+      return {
+        id: latest.id,
+        slug: latest.slug,
+        displayName: latest.displayName,
+        summary: latest.summary,
+        category: latest.category,
+        status: latest.status,
+        updatedAt: latest.updatedAt,
+        latestVersion: latest.version,
+        versionCount: sortedVersions.length,
+        totalDownloads: sortedVersions.reduce((sum, version) => sum + version.downloads, 0),
+        publishedCount: sortedVersions.filter((version) => version.status === "published").length,
+        pendingCount: sortedVersions.filter((version) => version.status === "pending").length,
+        rejectedCount: sortedVersions.filter((version) => version.status === "rejected").length,
+        versions: sortedVersions,
+      };
+    })
+    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
 }
 
 function applyLogQuery(items: Awaited<ReturnType<typeof getDashboardData>>["logs"], query: string) {

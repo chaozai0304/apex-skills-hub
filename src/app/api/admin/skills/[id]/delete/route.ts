@@ -1,6 +1,6 @@
 import { isAdminAuthenticated } from "@/lib/auth";
 import { buildSeeOtherResponse } from "@/lib/site";
-import { deleteSubmission } from "@/lib/store";
+import { deleteSkillGroup } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
 
@@ -17,12 +17,28 @@ export async function POST(request: Request, { params }: RouteProps) {
   const { id } = await params;
   const formData = await request.formData();
   const redirectToValue = String(formData.get("redirectTo") ?? "").trim();
+  const deleteFromGitLab = String(formData.get("deleteFromGitLab") ?? "") === "on";
   const redirectTo = redirectToValue.startsWith("/admin") ? redirectToValue : "/admin?tab=skills&page=1";
   const redirectUrl = new URL(redirectTo, "http://localhost");
 
   try {
-    await deleteSubmission(id, "superadmin");
-    redirectUrl.searchParams.set("skillDeleted", "1");
+    const result = await deleteSkillGroup(id, {
+      actorName: "superadmin",
+      deleteFromGitLab,
+    });
+    redirectUrl.searchParams.set("skillDeleted", `已删除技能 ${result.displayName}，共 ${result.deletedCount} 个版本。`);
+
+    if (deleteFromGitLab) {
+      if (result.gitLabSync.attempted && result.gitLabSync.synced) {
+        redirectUrl.searchParams.set(
+          "gitlabSyncSuccess",
+          result.gitLabSync.message ?? `已同步删除 GitLab 中的 ${result.slug}`,
+        );
+      } else if (result.gitLabSync.message) {
+        redirectUrl.searchParams.set("gitlabSyncError", result.gitLabSync.message);
+      }
+    }
+
     return buildSeeOtherResponse(request, `${redirectUrl.pathname}?${redirectUrl.searchParams.toString()}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : "删除技能失败。";

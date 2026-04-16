@@ -57,6 +57,11 @@ type TextFile = {
   content: string;
 };
 
+export type ArchiveEntry = {
+  path: string;
+  contentBase64: string;
+};
+
 export async function inspectSkillArchive(buffer: Buffer, options: InspectOptions = {}) {
   const zip = await JSZip.loadAsync(await normalizeSkillArchive(buffer));
   const filePaths: string[] = [];
@@ -176,6 +181,31 @@ export async function normalizeSkillArchive(buffer: Buffer) {
   return Buffer.from(
     await normalized.generateAsync({ type: "uint8array", compression: "DEFLATE" }),
   );
+}
+
+export async function extractArchiveEntries(buffer: Buffer): Promise<ArchiveEntry[]> {
+  const zip = await JSZip.loadAsync(await normalizeSkillArchive(buffer));
+  const entries = Object.values(zip.files).sort((a, b) => a.name.localeCompare(b.name));
+  const files: ArchiveEntry[] = [];
+
+  for (const entry of entries) {
+    if (entry.dir) {
+      continue;
+    }
+
+    const safePath = sanitizeZipPath(entry.name);
+    if (!safePath) {
+      continue;
+    }
+
+    const bytes = Buffer.from(await entry.async("uint8array"));
+    files.push({
+      path: safePath,
+      contentBase64: bytes.toString("base64"),
+    });
+  }
+
+  return files;
 }
 
 function getString(value: unknown) {

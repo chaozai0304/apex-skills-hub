@@ -6,12 +6,26 @@ import { join } from "node:path";
 
 import { getAdminCredentials } from "@/lib/config";
 import { db } from "@/lib/db";
+import {
+  applySelectedBranch,
+  buildGitLabSkillRootPath,
+  deleteSkillFromGitLab,
+  listGitLabBranches,
+  parseGitLabTreeUrl,
+  syncSubmissionToGitLab,
+  testGitLabConnection,
+} from "@/lib/gitlab-sync";
 import { hashPassword } from "@/lib/security";
 import type {
   ApprovalLogAction,
   ApprovalLogRecord,
   CatalogItem,
   FavoriteRecord,
+  GitLabBranchOption,
+  GitLabConnectionTestResult,
+  GitLabSyncConfig,
+  GitLabSyncConfigSummary,
+  GitLabSyncResult,
   HubStore,
   LeaderboardData,
   LeaderboardEntry,
@@ -24,7 +38,12 @@ import type {
   UserRecord,
 } from "@/lib/types";
 import { normalizeSlug, safeSegment, splitTags } from "@/lib/utils";
-import { createZipFromFiles, inspectSkillArchive, normalizeSkillArchive } from "@/lib/zip";
+import {
+  createZipFromFiles,
+  extractArchiveEntries,
+  inspectSkillArchive,
+  normalizeSkillArchive,
+} from "@/lib/zip";
 
 const DATA_DIR = join(/* turbopackIgnore: true */ process.cwd(), "data");
 const STORAGE_DIR = join(
@@ -33,6 +52,8 @@ const STORAGE_DIR = join(
   "archives",
 );
 const STORE_FILE = join(DATA_DIR, "records.json");
+const GITLAB_SYNC_SETTING_KEY = "gitlab-sync";
+const GITLAB_SYNC_STORAGE_MISSING = Symbol("gitlab-sync-storage-missing");
 const REMOVED_TEST_SUBMISSION_IDS = new Set(["76558742-5817-4d0b-9a91-8a485eaff921"]);
 
 let initPromise: Promise<void> | null = null;
@@ -461,7 +482,42 @@ export async function reviewSubmission(id: string, decision: ReviewDecision, not
     message: `${decision === "approve" ? "审批发布" : "驳回退回"}技能 ${updated.displayName}`,
   });
 
-  return mapSubmission(updated);
+  let gitLabSync: GitLabSyncResult = { attempted: false, synced: false };
+
+  if (decision === "approve") {
+    try {
+      gitLabSync = await synchronizeApprovedSubmissionToGitLab(mapSubmission(updated));
+
+      if (gitLabSync.attempted && gitLabSync.synced) {
+        await appendGitLabSyncLog({
+          action: "gitlab-sync-succeeded",
+          actorType: "admin",
+          actorName: "superadmin",
+          targetType: "skill",
+          targetId: updated.id,
+          targetLabel: `${updated.slug}@${updated.version}`,
+          message: gitLabSync.message || `已同步到 GitLab 目录 ${gitLabSync.targetPath}`,
+        });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "同步到 GitLab 失败。";
+      gitLabSync = { attempted: true, synced: false, message };
+      await appendGitLabSyncLog({
+        action: "gitlab-sync-failed",
+        actorType: "admin",
+        actorName: "superadmin",
+        targetType: "skill",
+        targetId: updated.id,
+        targetLabel: `${updated.slug}@${updated.version}`,
+        message,
+      });
+    }
+  }
+
+  return {
+    submission: mapSubmission(updated),
+    gitLabSync,
+  };
 }
 
 export async function deleteSubmission(id: string, actorName = "superadmin") {
@@ -497,6 +553,109 @@ export async function deleteSubmission(id: string, actorName = "superadmin") {
   });
 
   return mapSubmission(target);
+}
+
+export async function deleteSkillGroup(
+  id: string,
+  options?: {
+    actorName?: string;
+    deleteFromGitLab?: boolean;
+  },
+) {
+  await ensureStore();
+  const actorName = options?.actorName ?? "superadmin";
+  const target = await db.submission.findUnique({ where: { id } });
+
+  if (!target) {
+    throw new Error("技能记录不存在。");
+  }
+
+  const siblings = await db.submission.findMany({
+    where: { slug: target.slug },
+    orderBy: { updatedAt: "desc" },
+  });
+
+  if (!siblings.length) {
+    throw new Error("未找到需要删除的技能版本。");
+  }
+
+  await db.submission.deleteMany({ where: { slug: target.slug } });
+
+  await Promise.all(
+    siblings.map(async (item: DbSubmission) => {
+      try {
+        await rm(join(/* turbopackIgnore: true */ process.cwd(), item.zipPath), { force: true });
+      } catch {
+        // ignore archive cleanup errors
+      }
+    }),
+  );
+
+  await db.favorite.deleteMany({ where: { slug: target.slug } });
+  await db.rating.deleteMany({ where: { slug: target.slug } });
+
+  await appendLog({
+    action: "skill-deleted",
+    actorType: "admin",
+    actorName,
+    targetType: "skill",
+    targetId: target.id,
+    targetLabel: target.slug,
+    message: `删除技能 ${target.displayName}（共 ${siblings.length} 个版本）`,
+  });
+
+  let gitLabSync: GitLabSyncResult = { attempted: false, synced: false };
+
+  if (options?.deleteFromGitLab) {
+    const record = await readGitLabSyncSettingRecord();
+    if (record === GITLAB_SYNC_STORAGE_MISSING) {
+      gitLabSync = {
+        attempted: false,
+        synced: false,
+        message: "GitLab 同步配置表尚未创建，已跳过仓库删除。",
+      };
+    } else {
+      const config = normalizeGitLabSyncConfig(record?.value);
+
+      try {
+        gitLabSync = await deleteSkillFromGitLab({
+          slug: target.slug,
+          config,
+        });
+
+        if (gitLabSync.attempted && gitLabSync.synced) {
+          await appendGitLabSyncLog({
+            action: "gitlab-sync-succeeded",
+            actorType: "admin",
+            actorName,
+            targetType: "skill",
+            targetId: target.id,
+            targetLabel: target.slug,
+            message: gitLabSync.message || `已从 GitLab 删除技能目录 ${gitLabSync.targetPath}`,
+          });
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "删除 GitLab 镜像失败。";
+        gitLabSync = { attempted: true, synced: false, message };
+        await appendGitLabSyncLog({
+          action: "gitlab-sync-failed",
+          actorType: "admin",
+          actorName,
+          targetType: "skill",
+          targetId: target.id,
+          targetLabel: target.slug,
+          message,
+        });
+      }
+    }
+  }
+
+  return {
+    slug: target.slug,
+    displayName: target.displayName,
+    deletedCount: siblings.length,
+    gitLabSync,
+  };
 }
 
 export async function incrementDownload(id: string) {
@@ -709,6 +868,138 @@ export async function listApprovalLogs(limit = 20) {
   );
 }
 
+export async function getGitLabSyncConfigSummary(): Promise<GitLabSyncConfigSummary> {
+  await ensureStore();
+  const record = await readGitLabSyncSettingRecord();
+
+  if (record === GITLAB_SYNC_STORAGE_MISSING) {
+    return buildGitLabSyncSummary(undefined, undefined, {
+      storageReady: false,
+      issue:
+        "当前数据库尚未创建 GitLab 同步配置表，请先执行数据库迁移（例如 npm run db:migrate:deploy）。",
+    });
+  }
+
+  const config = normalizeGitLabSyncConfig(record?.value);
+  const availableBranches = await loadAvailableBranches(config);
+
+  try {
+    return buildGitLabSyncSummary(config, record?.updatedAt.toISOString(), {
+      storageReady: true,
+      availableBranches,
+    });
+  } catch {
+    return buildGitLabSyncSummary(config, record?.updatedAt.toISOString(), {
+      storageReady: true,
+      availableBranches,
+      issue: config.repositoryTreeUrl ? "当前地址暂时无法解析，请检查 GitLab 目录页格式。" : undefined,
+    });
+  }
+}
+
+export async function updateGitLabSyncConfig(input: {
+  enabled: boolean;
+  repositoryTreeUrl: string;
+  branch?: string;
+  token?: string;
+  clearToken?: boolean;
+}) {
+  await ensureStore();
+  const existingRecord = await readGitLabSyncSettingRecordOrThrow();
+  const existing = normalizeGitLabSyncConfig(existingRecord?.value);
+
+  const repositoryTreeUrl = input.repositoryTreeUrl.trim();
+  const branch = input.branch?.trim() || parseSelectedBranchFromUrl(repositoryTreeUrl) || existing.branch;
+  const token = input.clearToken ? "" : input.token?.trim() || existing.token;
+  const enabled = input.enabled;
+
+  if (repositoryTreeUrl) {
+    const parsed = parseGitLabTreeUrl(repositoryTreeUrl);
+    const normalizedBranch = branch || parsed.branch;
+
+    if (token) {
+      const branches = await listGitLabBranches({ repositoryTreeUrl, token });
+      if (branches.length && !branches.some((item) => item.name === normalizedBranch)) {
+        throw new Error(`选择的分支不存在：${normalizedBranch}`);
+      }
+    }
+  }
+
+  if (enabled && !repositoryTreeUrl) {
+    throw new Error("启用 GitLab 同步前请先填写目录地址。");
+  }
+
+  if (enabled && !token) {
+    throw new Error("启用 GitLab 同步前请先填写授权码。若已保存过授权码，可留空以继续沿用。");
+  }
+
+  await db.appSetting.upsert({
+    where: { key: GITLAB_SYNC_SETTING_KEY },
+    update: {
+      value: {
+        enabled,
+        repositoryTreeUrl,
+        branch,
+        token,
+      } as never,
+      updatedAt: new Date(),
+    },
+    create: {
+      key: GITLAB_SYNC_SETTING_KEY,
+      value: {
+        enabled,
+        repositoryTreeUrl,
+        branch,
+        token,
+      } as never,
+      updatedAt: new Date(),
+    },
+  });
+
+  return getGitLabSyncConfigSummary();
+}
+
+export async function testGitLabSyncConnection(input: {
+  repositoryTreeUrl: string;
+  branch?: string;
+  token?: string;
+}): Promise<GitLabConnectionTestResult> {
+  await ensureStore();
+
+  const existingRecord = await readGitLabSyncSettingRecord();
+  const existing =
+    existingRecord && existingRecord !== GITLAB_SYNC_STORAGE_MISSING
+      ? normalizeGitLabSyncConfig(existingRecord.value)
+      : undefined;
+  const repositoryTreeUrl = input.repositoryTreeUrl.trim() || existing?.repositoryTreeUrl || "";
+  const branch = input.branch?.trim() || existing?.branch || parseSelectedBranchFromUrl(repositoryTreeUrl);
+  const token = input.token?.trim() || existing?.token || "";
+
+  return testGitLabConnection({
+    repositoryTreeUrl,
+    branch,
+    token,
+  });
+}
+
+export async function getGitLabBranches(input: {
+  repositoryTreeUrl: string;
+  token?: string;
+}): Promise<GitLabBranchOption[]> {
+  await ensureStore();
+
+  const existingRecord = await readGitLabSyncSettingRecord();
+  const existing =
+    existingRecord && existingRecord !== GITLAB_SYNC_STORAGE_MISSING
+      ? normalizeGitLabSyncConfig(existingRecord.value)
+      : undefined;
+
+  const repositoryTreeUrl = input.repositoryTreeUrl.trim() || existing?.repositoryTreeUrl || "";
+  const token = input.token?.trim() || existing?.token || "";
+
+  return listGitLabBranches({ repositoryTreeUrl, token });
+}
+
 function applyCatalogQuery(items: CatalogItem[], query?: string) {
   if (!query?.trim()) {
     return items;
@@ -765,6 +1056,220 @@ function getLatestPublishedBySlug(submissions: SubmissionRecord[]): CatalogItem[
     featured: entry.featured,
     fileCount: entry.fileCount,
   }));
+}
+
+function normalizeGitLabSyncConfig(value: unknown): GitLabSyncConfig {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {
+      enabled: false,
+      repositoryTreeUrl: "",
+      branch: "",
+      token: "",
+    };
+  }
+
+  return {
+    enabled: Boolean((value as { enabled?: unknown }).enabled),
+    repositoryTreeUrl:
+      typeof (value as { repositoryTreeUrl?: unknown }).repositoryTreeUrl === "string"
+        ? (value as { repositoryTreeUrl: string }).repositoryTreeUrl.trim()
+        : "",
+    branch:
+      typeof (value as { branch?: unknown }).branch === "string"
+        ? (value as { branch: string }).branch.trim()
+        : "",
+    token:
+      typeof (value as { token?: unknown }).token === "string"
+        ? (value as { token: string }).token.trim()
+        : "",
+  };
+}
+
+async function synchronizeApprovedSubmissionToGitLab(
+  submission: SubmissionRecord,
+): Promise<GitLabSyncResult> {
+  const record = await readGitLabSyncSettingRecord();
+  if (record === GITLAB_SYNC_STORAGE_MISSING) {
+    return {
+      attempted: false,
+      synced: false,
+      message: "GitLab 同步配置表尚未创建，已跳过同步。",
+    };
+  }
+
+  const config = normalizeGitLabSyncConfig(record?.value);
+
+  if (!config.enabled || !config.repositoryTreeUrl || !config.token) {
+    return { attempted: false, synced: false, message: "未配置 GitLab 同步。" };
+  }
+
+  const archive = await readArchive(submission);
+  const files = await extractArchiveEntries(archive);
+  const parsedTarget = applySelectedBranch(parseGitLabTreeUrl(config.repositoryTreeUrl), config.branch);
+  const result = await syncSubmissionToGitLab({
+    submission,
+    config,
+    files,
+  });
+
+  return {
+    ...result,
+    targetPath: buildGitLabSkillRootPath(parsedTarget, submission.slug),
+  };
+}
+
+function buildGitLabSyncSummary(
+  config?: GitLabSyncConfig,
+  updatedAt?: string,
+  extras?: {
+    storageReady?: boolean;
+    issue?: string;
+    availableBranches?: GitLabBranchOption[];
+  },
+): GitLabSyncConfigSummary {
+  const normalized = config ?? {
+    enabled: false,
+    repositoryTreeUrl: "",
+    branch: "",
+    token: "",
+  };
+
+  const summary: GitLabSyncConfigSummary = {
+    enabled: normalized.enabled,
+    repositoryTreeUrl: normalized.repositoryTreeUrl,
+    branch: normalized.branch,
+    hasToken: Boolean(normalized.token),
+    maskedToken: maskToken(normalized.token),
+    updatedAt,
+    storageReady: extras?.storageReady ?? true,
+    issue: extras?.issue,
+    availableBranches: extras?.availableBranches,
+  };
+
+  if (!normalized.repositoryTreeUrl) {
+    return summary;
+  }
+
+  const parsed = applySelectedBranch(parseGitLabTreeUrl(normalized.repositoryTreeUrl), normalized.branch);
+  return {
+    ...summary,
+    projectPath: parsed.projectPath,
+    branch: parsed.branch,
+    basePath: parsed.basePath,
+  };
+}
+
+async function loadAvailableBranches(config: GitLabSyncConfig) {
+  if (!config.repositoryTreeUrl || !config.token) {
+    return undefined;
+  }
+
+  try {
+    return await listGitLabBranches({
+      repositoryTreeUrl: config.repositoryTreeUrl,
+      token: config.token,
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+async function appendGitLabSyncLog(input: {
+  action: Extract<ApprovalLogAction, "gitlab-sync-succeeded" | "gitlab-sync-failed">;
+  actorType: ApprovalLogRecord["actorType"];
+  actorName: string;
+  targetType: ApprovalLogRecord["targetType"];
+  targetId: string;
+  targetLabel: string;
+  message: string;
+}) {
+  try {
+    await appendLog(input);
+  } catch (error) {
+    if (isApprovalLogEnumValueMissing(error)) {
+      console.error("GitLab sync log skipped because ApprovalLogAction enum is outdated.", error);
+      return;
+    }
+
+    throw error;
+  }
+}
+
+function parseSelectedBranchFromUrl(repositoryTreeUrl: string) {
+  if (!repositoryTreeUrl.trim()) {
+    return "";
+  }
+
+  try {
+    return parseGitLabTreeUrl(repositoryTreeUrl).branch;
+  } catch {
+    return "";
+  }
+}
+
+function maskToken(token?: string) {
+  const value = token?.trim() ?? "";
+  if (!value) {
+    return undefined;
+  }
+
+  if (value.length <= 8) {
+    return `${value.slice(0, 2)}****`;
+  }
+
+  return `${value.slice(0, 4)}••••${value.slice(-4)}`;
+}
+
+async function readGitLabSyncSettingRecord() {
+  try {
+    return await db.appSetting.findUnique({ where: { key: GITLAB_SYNC_SETTING_KEY } });
+  } catch (error) {
+    if (isGitLabSettingsTableMissing(error)) {
+      return GITLAB_SYNC_STORAGE_MISSING;
+    }
+    throw error;
+  }
+}
+
+async function readGitLabSyncSettingRecordOrThrow() {
+  try {
+    return await db.appSetting.findUnique({ where: { key: GITLAB_SYNC_SETTING_KEY } });
+  } catch (error) {
+    if (isGitLabSettingsTableMissing(error)) {
+      throw new Error(
+        "当前数据库尚未创建 GitLab 同步配置表，请先执行数据库迁移（例如 npm run db:migrate:deploy）。",
+      );
+    }
+    throw error;
+  }
+}
+
+function isGitLabSettingsTableMissing(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const candidate = error as {
+    code?: string;
+    meta?: { modelName?: string; table?: string };
+  };
+
+  return (
+    candidate.code === "P2021" &&
+    (candidate.meta?.modelName === "AppSetting" || candidate.meta?.table === "public.AppSetting")
+  );
+}
+
+function isApprovalLogEnumValueMissing(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const message = "message" in error && typeof (error as { message?: unknown }).message === "string"
+    ? (error as { message: string }).message
+    : "";
+
+  return message.includes('invalid input value for enum "ApprovalLogAction"');
 }
 
 async function bootstrapStore() {

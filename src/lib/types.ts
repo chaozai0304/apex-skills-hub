@@ -5,10 +5,54 @@ export type ApprovalLogAction =
   | "skill-approved"
   | "skill-rejected"
   | "skill-deleted"
+  | "gitlab-sync-succeeded"
+  | "gitlab-sync-failed"
   | "user-created"
   | "user-enabled"
   | "user-disabled"
   | "password-changed";
+
+export type GitLabSyncConfig = {
+  enabled: boolean;
+  repositoryTreeUrl: string;
+  branch: string;
+  token: string;
+};
+
+export type GitLabBranchOption = {
+  name: string;
+  isDefault?: boolean;
+};
+
+export type GitLabSyncConfigSummary = {
+  enabled: boolean;
+  repositoryTreeUrl: string;
+  branch: string;
+  hasToken: boolean;
+  maskedToken?: string;
+  updatedAt?: string;
+  projectPath?: string;
+  basePath?: string;
+  storageReady?: boolean;
+  issue?: string;
+  availableBranches?: GitLabBranchOption[];
+};
+
+export type GitLabSyncResult = {
+  attempted: boolean;
+  synced: boolean;
+  message?: string;
+  targetPath?: string;
+};
+
+export type GitLabConnectionTestResult = {
+  ok: boolean;
+  message: string;
+  projectPath?: string;
+  branch?: string;
+  basePath?: string;
+  availableBranches?: GitLabBranchOption[];
+};
 
 export type FileNode = {
   name: string;

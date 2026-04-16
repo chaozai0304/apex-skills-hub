@@ -22,6 +22,8 @@ enum ApprovalLogAction {
   skill_approved
   skill_rejected
   skill_deleted
+  gitlab_sync_succeeded
+  gitlab_sync_failed
   user_created
   user_enabled
   user_disabled
@@ -120,4 +122,10 @@ model ApprovalLog {
   createdAt   DateTime
 
   @@index([createdAt])
+}
+
+model AppSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime
 }

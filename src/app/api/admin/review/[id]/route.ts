@@ -23,6 +23,21 @@ export async function POST(request: Request, context: ReviewRouteContext) {
     return buildSeeOtherResponse(request, "/admin");
   }
 
-  await reviewSubmission(id, decision, reviewNotes);
-  return buildSeeOtherResponse(request, "/admin");
+  const result = await reviewSubmission(id, decision, reviewNotes);
+
+  if (decision === "approve" && result.gitLabSync.attempted) {
+    if (result.gitLabSync.synced) {
+      return buildSeeOtherResponse(
+        request,
+        `/admin?tab=pending&gitlabSyncSuccess=${encodeURIComponent(result.gitLabSync.message || "已同步到 GitLab。")}`,
+      );
+    }
+
+    return buildSeeOtherResponse(
+      request,
+      `/admin?tab=pending&gitlabSyncError=${encodeURIComponent(result.gitLabSync.message || "同步到 GitLab 失败。")}`,
+    );
+  }
+
+  return buildSeeOtherResponse(request, "/admin?tab=pending");
 }
