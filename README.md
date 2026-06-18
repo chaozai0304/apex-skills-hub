@@ -153,7 +153,7 @@ npx clawhub install feature-full-lifecycle --registry http://your-host:3000
 例如在内网环境：
 
 ```bash
-npx clawhub install feature-full-lifecycle --registry http://172.17.189.156:8188
+npx clawhub install feature-full-lifecycle --registry http://172.17.1.2:8188
 ```
 
 如果某个 `slug` 有多个已发布版本，未显式指定版本号时，CLI 会默认安装该技能的最新发布版本。
@@ -364,7 +364,7 @@ npx clawhub install feature-full-lifecycle --registry http://your-host:3000
 For example, on an internal network:
 
 ```bash
-npx clawhub install feature-full-lifecycle --registry http://172.17.189.156:8188
+npx clawhub install feature-full-lifecycle --registry http://172.17.1.2:8188
 ```
 
 If multiple published versions exist under the same `slug`, the CLI resolves to the latest published version by default when no explicit version is provided.

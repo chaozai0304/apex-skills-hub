@@ -1,6 +1,6 @@
 import { getCurrentUser, isAdminAuthenticated } from "@/lib/auth";
 import { buildSeeOtherResponse } from "@/lib/site";
-import { canManageSubmissionProject, deleteSkillGroup, deleteSubmission, getProjectAdminScope } from "@/lib/store";
+import { canManageSubmissionProject, getProjectAdminScope, switchSkillProject } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
 
@@ -12,6 +12,7 @@ export async function POST(request: Request, { params }: RouteProps) {
   const isAdmin = await isAdminAuthenticated();
   const currentUser = isAdmin ? null : await getCurrentUser();
   const projectScope = isAdmin ? [] : await getProjectAdminScope(currentUser?.id);
+
   if (!isAdmin && !projectScope.length) {
     return buildSeeOtherResponse(request, "/admin/login?next=/admin");
   }
@@ -19,34 +20,34 @@ export async function POST(request: Request, { params }: RouteProps) {
   const { id } = await params;
   const formData = await request.formData();
   const redirectToValue = String(formData.get("redirectTo") ?? "").trim();
-  const deleteScope = String(formData.get("deleteScope") ?? "group");
-  const deleteFromGitLab = String(formData.get("deleteFromGitLab") ?? "") === "on";
+  const projectId = String(formData.get("projectId") ?? "").trim();
   const redirectTo = redirectToValue.startsWith("/admin") ? redirectToValue : "/admin?tab=skills&page=1";
   const redirectUrl = new URL(redirectTo, "http://localhost");
 
   try {
     if (!isAdmin && !(await canManageSubmissionProject(id, projectScope))) {
-      throw new Error("无权删除该项目的技能。");
+      throw new Error("无权切换该项目的技能。");
     }
 
-    if (deleteScope === "single") {
-      const deleted = await deleteSubmission(id, isAdmin ? "superadmin" : currentUser?.username);
-      redirectUrl.searchParams.set("skillDeleted", `已删除待审批提交 ${deleted.displayName}。`);
-      return buildSeeOtherResponse(request, `${redirectUrl.pathname}?${redirectUrl.searchParams.toString()}`);
+    if (!projectId) {
+      throw new Error("请选择新的项目。");
     }
 
-    const result = await deleteSkillGroup(id, {
-      actorName: isAdmin ? "superadmin" : currentUser?.username,
-      deleteFromGitLab,
-    });
-    redirectUrl.searchParams.set("skillDeleted", `已删除技能 ${result.displayName}，共 ${result.deletedCount} 个版本。`);
+    if (!isAdmin && !projectScope.includes(projectId)) {
+      throw new Error("只能切换到你管理的项目。");
+    }
 
-    if (deleteFromGitLab) {
-      if (result.gitLabSync.attempted && result.gitLabSync.synced) {
-        redirectUrl.searchParams.set(
-          "gitlabSyncSuccess",
-          result.gitLabSync.message ?? `已同步删除 GitLab 中的 ${result.slug}`,
-        );
+    const result = await switchSkillProject(id, projectId, isAdmin ? "superadmin" : currentUser?.username);
+    redirectUrl.searchParams.set(
+      "skillDeleted",
+      result.movedCount
+        ? `已将技能 ${result.displayName} 切换到项目 ${result.projectName}，共 ${result.movedCount} 个版本。`
+        : result.gitLabSync.message ?? "项目未变化。",
+    );
+
+    if (result.gitLabSync.attempted) {
+      if (result.gitLabSync.synced) {
+        redirectUrl.searchParams.set("gitlabSyncSuccess", result.gitLabSync.message ?? "已同步到新 GitLab 项目。");
       } else if (result.gitLabSync.message) {
         redirectUrl.searchParams.set("gitlabSyncError", result.gitLabSync.message);
       }
@@ -54,7 +55,7 @@ export async function POST(request: Request, { params }: RouteProps) {
 
     return buildSeeOtherResponse(request, `${redirectUrl.pathname}?${redirectUrl.searchParams.toString()}`);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "删除技能失败。";
+    const message = error instanceof Error ? error.message : "切换技能项目失败。";
     redirectUrl.searchParams.set("skillError", message);
     return buildSeeOtherResponse(request, `${redirectUrl.pathname}?${redirectUrl.searchParams.toString()}`);
   }

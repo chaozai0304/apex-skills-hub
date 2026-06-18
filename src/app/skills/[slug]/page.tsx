@@ -39,6 +39,7 @@ export default async function SkillDetailPage({ params, searchParams }: SkillPag
   const activeTab = isSkillTabKey(resolvedSearchParams.tab) ? resolvedSearchParams.tab : "overview";
   const updateQuery = new URLSearchParams({
     mode: "update",
+    project: detail.latest.projectId,
     slug: detail.latest.slug,
     displayName: detail.latest.displayName,
     category: detail.latest.category,
@@ -76,75 +77,75 @@ export default async function SkillDetailPage({ params, searchParams }: SkillPag
 
   return (
     <AppShell>
-      <section className="grid items-start gap-8 xl:grid-cols-[minmax(0,1fr)_21rem]">
-        <div className="space-y-8">
-        <div className="section-card lg:p-10">
-          <div className="flex flex-wrap items-center gap-3">
-            <span className="inline-flex items-center gap-2 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
+      <section className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_18rem]">
+        <div className="space-y-5">
+        <div className="section-card lg:p-6">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-700">
               <BadgeCheck className="h-3.5 w-3.5" />
-              global
+              {detail.latest.projectName}
             </span>
-            <span className="inline-flex items-center gap-2 rounded-full bg-sky-50 px-3 py-1 text-xs font-semibold text-sky-700">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-sky-50 px-2.5 py-1 text-[11px] font-semibold text-sky-700">
               <Layers3 className="h-3.5 w-3.5" />
               {pick(locale, "已发布", "Published")}
             </span>
           </div>
 
-          <h1 className="mt-5 text-4xl font-semibold tracking-tight text-slate-950 lg:text-5xl">
+          <h1 className="mt-4 text-3xl font-semibold tracking-tight text-slate-950 lg:text-4xl">
             {detail.latest.displayName}
           </h1>
-          <div className="mt-4 text-sm text-slate-500">
+          <div className="mt-3 text-xs text-slate-500">
             {pick(locale, `作者 ${detail.latest.authorName} · 最新版本 ${detail.latest.version}`, `By ${detail.latest.authorName} · Latest version ${detail.latest.version}`)}
           </div>
 
-          <p className="mt-6 max-w-4xl text-lg leading-8 text-slate-600">{detail.latest.summary}</p>
+          <p className="mt-4 max-w-4xl text-sm leading-6 text-slate-600">{detail.latest.summary}</p>
 
-          <div className="mt-8 grid gap-4 md:grid-cols-4">
+          <div className="mt-5 grid gap-3 md:grid-cols-4">
             {[
               { label: pick(locale, "版本", "Version"), value: detail.latest.version, icon: Layers3 },
               { label: pick(locale, "下载量", "Downloads"), value: formatNumber(detail.latest.downloads, locale), icon: Download },
               { label: pick(locale, "文件数", "Files"), value: String(detail.latest.fileCount), icon: Files },
               { label: pick(locale, "收藏 / 评分", "Favorites / Rating"), value: `${engagement.favoriteCount} / ${engagement.averageRating.toFixed(1)}`, icon: Star },
             ].map((item) => (
-              <div key={item.label} className="rounded-3xl bg-slate-50 px-5 py-4">
-                <div className="flex items-center gap-2 text-xs uppercase tracking-[0.2em] text-slate-400">
+              <div key={item.label} className="rounded-2xl bg-slate-50 px-4 py-3">
+                <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-[0.16em] text-slate-400">
                   <item.icon className="h-3.5 w-3.5" />
                   {item.label}
                 </div>
-                <div className="mt-2 text-lg font-semibold text-slate-950">{item.value}</div>
+                <div className="mt-1.5 text-base font-semibold text-slate-950">{item.value}</div>
               </div>
             ))}
           </div>
 
-          <div className="mt-8 flex flex-wrap gap-3">
-            <a href={`/api/download/${detail.latest.id}`} className="button-primary h-12 px-6 text-sm">
+          <div className="mt-5 flex flex-wrap gap-2">
+            <a href={`/api/download/${detail.latest.id}`} className="button-primary h-10 px-4 text-xs">
               {pick(locale, "下载 ZIP", "Download ZIP")}
             </a>
-            <Link href={updateHref} className="button-secondary h-12 gap-2 px-6 text-sm">
+            <Link href={updateHref} className="button-secondary h-10 gap-2 px-4 text-xs">
               <PencilLine className="h-4 w-4" />
               {pick(locale, "提交新版本", "Submit new version")}
             </Link>
-            <Link href="/search" className="button-secondary h-12 px-6 text-sm">
+            <Link href="/search" className="button-secondary h-10 px-4 text-xs">
               {pick(locale, "返回搜索", "Back to search")}
             </Link>
           </div>
         </div>
 
         <section className="surface-card overflow-hidden">
-          <div className="border-b border-slate-200 px-6 py-5 lg:px-8">
-            <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+          <div className="border-b border-slate-200 px-5 py-4 lg:px-6">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
               <div>
                 <div className="section-eyebrow">{activeTabMeta.eyebrow}</div>
-                <h2 className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">{activeTabMeta.title}</h2>
-                <p className="mt-3 max-w-3xl text-sm leading-7 text-slate-500">{activeTabMeta.description}</p>
+                <h2 className="mt-2 text-xl font-semibold tracking-tight text-slate-950">{activeTabMeta.title}</h2>
+                <p className="mt-2 max-w-3xl text-xs leading-6 text-slate-500">{activeTabMeta.description}</p>
               </div>
 
-              <div className="inline-flex w-fit flex-wrap gap-2 rounded-2xl bg-slate-100 p-1.5">
+              <div className="inline-flex w-fit flex-wrap gap-1 rounded-xl bg-slate-100 p-1">
                 {tabs.map((tab) => (
                   <Link
                     key={tab.key}
                     href={`/skills/${detail.latest.slug}?tab=${tab.key}`}
-                    className={`inline-flex h-11 items-center justify-center rounded-xl px-5 text-sm font-semibold transition ${
+                    className={`inline-flex h-8 items-center justify-center rounded-lg px-3 text-xs font-semibold transition ${
                       activeTab === tab.key
                         ? "bg-white text-slate-950 shadow-sm"
                         : "text-slate-500 hover:text-slate-700"
@@ -157,37 +158,37 @@ export default async function SkillDetailPage({ params, searchParams }: SkillPag
             </div>
           </div>
 
-          <div className="px-6 py-6 lg:px-8 lg:py-8">
+          <div className="px-5 py-5 lg:px-6 lg:py-6">
             {activeTab === "overview" ? (
-              <div className="rounded-[2rem] bg-slate-50 px-6 py-6 text-sm text-slate-700 lg:px-8 lg:py-8">
+              <div className="rounded-2xl bg-slate-50 px-5 py-5 text-sm text-slate-700">
                 <MarkdownRenderer content={detail.latest.readme} />
               </div>
             ) : null}
 
             {activeTab === "files" ? (
-              <div className="overflow-hidden rounded-[1.75rem] border border-slate-200 bg-white">
-                <div className="flex items-center justify-between gap-4 border-b border-slate-200 bg-slate-50/80 px-5 py-4">
+              <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                <div className="flex items-center justify-between gap-4 border-b border-slate-200 bg-slate-50/80 px-4 py-3">
                   <div className="flex items-center gap-3">
                     <Files className="h-5 w-5 text-slate-500" />
-                    <div className="text-lg font-semibold text-slate-950">{pick(locale, "文件浏览", "File browser")}</div>
+                    <div className="text-base font-semibold text-slate-950">{pick(locale, "文件浏览", "File browser")}</div>
                   </div>
                   <div className="rounded-full bg-white px-3 py-1 text-sm font-semibold text-slate-500 ring-1 ring-slate-200">
                     {detail.latest.fileCount}
                   </div>
                 </div>
-                <div className="px-4 py-4 lg:px-5 lg:py-5">
+                <div className="px-4 py-4">
                   <FileTree nodes={detail.latest.fileTree} />
                 </div>
               </div>
             ) : null}
 
             {activeTab === "versions" ? (
-              <div className="space-y-4">
+              <div className="space-y-3">
                 {detail.versions.map((version, index) => (
-                  <div key={version.id} className="rounded-[1.75rem] border border-slate-200 bg-white p-5 shadow-[0_12px_35px_-32px_rgba(15,23,42,0.35)]">
+                  <div key={version.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_10px_30px_-28px_rgba(15,23,42,0.35)]">
                     <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                       <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2 text-xl font-semibold text-slate-950">
+                        <div className="flex flex-wrap items-center gap-2 text-base font-semibold text-slate-950">
                           {version.version}
                           {index === 0 ? (
                             <span className="inline-flex rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-700">
@@ -195,7 +196,7 @@ export default async function SkillDetailPage({ params, searchParams }: SkillPag
                             </span>
                           ) : null}
                         </div>
-                        <div className="mt-2 flex flex-wrap items-center gap-3 text-sm text-slate-500">
+                        <div className="mt-1.5 flex flex-wrap items-center gap-3 text-xs text-slate-500">
                           <span className="inline-flex items-center gap-1.5">
                             <CalendarClock className="h-4 w-4" />
                             {formatDateTime(version.publishedAt ?? version.updatedAt, locale)}
@@ -205,12 +206,12 @@ export default async function SkillDetailPage({ params, searchParams }: SkillPag
                             {pick(locale, "下载量 ", "Downloads ")}{formatNumber(version.downloads, locale)}
                           </span>
                         </div>
-                        <p className="mt-4 text-sm leading-7 text-slate-600">{version.changelog || pick(locale, "暂无更新说明", "No changelog provided")}</p>
+                        <p className="mt-2 text-xs leading-6 text-slate-600">{version.changelog || pick(locale, "暂无更新说明", "No changelog provided")}</p>
                       </div>
 
                       <a
                         href={`/api/download/${version.id}`}
-                        className="button-secondary h-11 shrink-0 px-5 text-sm"
+                        className="button-secondary h-9 shrink-0 px-4 text-xs"
                       >
                         {pick(locale, "下载该版本", "Download this version")}
                       </a>
@@ -223,11 +224,11 @@ export default async function SkillDetailPage({ params, searchParams }: SkillPag
         </section>
         </div>
 
-        <aside className="space-y-6 xl:sticky xl:top-24">
+        <aside className="space-y-4 xl:sticky xl:top-20">
           <div className="surface-card overflow-hidden">
-            <div className="border-b border-slate-200 px-6 py-5">
+            <div className="border-b border-slate-200 px-4 py-3">
               <div className="section-eyebrow">技能信息</div>
-              <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">{pick(locale, "侧边摘要", "Sidebar summary")}</h2>
+              <h2 className="mt-2 text-lg font-semibold tracking-tight text-slate-950">{pick(locale, "侧边摘要", "Sidebar summary")}</h2>
             </div>
 
             <dl className="divide-y divide-slate-100">
@@ -239,15 +240,15 @@ export default async function SkillDetailPage({ params, searchParams }: SkillPag
                 { label: pick(locale, "作者", "Author"), value: detail.latest.authorName },
                 { label: pick(locale, "分类", "Category"), value: detail.latest.category },
               ].map((item) => (
-                <div key={item.label} className="flex items-start justify-between gap-4 px-6 py-4">
-                  <dt className="text-sm text-slate-500">{item.label}</dt>
-                  <dd className="text-right text-sm font-semibold text-slate-950">{item.value}</dd>
+                <div key={item.label} className="flex items-start justify-between gap-3 px-4 py-2.5">
+                  <dt className="text-xs text-slate-500">{item.label}</dt>
+                  <dd className="text-right text-xs font-semibold text-slate-950">{item.value}</dd>
                 </div>
               ))}
             </dl>
 
             {detail.latest.tags.length ? (
-              <div className="border-t border-slate-100 bg-slate-50/70 px-6 py-5">
+              <div className="border-t border-slate-100 bg-slate-50/70 px-4 py-3">
                 <div className="mb-3 inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">
                   <Tag className="h-3.5 w-3.5" />
                   {pick(locale, "标签", "Tags")}
@@ -278,30 +279,30 @@ export default async function SkillDetailPage({ params, searchParams }: SkillPag
             locale={locale}
           />
 
-          <div className="surface-card p-6">
+          <div className="surface-card p-4">
             <div className="section-eyebrow">{pick(locale, "更新技能", "Update skill")}</div>
-            <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">{pick(locale, "如何更新这个技能", "How to update this skill")}</h2>
-            <ol className="mt-4 list-decimal space-y-3 pl-5 text-sm leading-7 text-slate-600">
+            <h2 className="mt-2 text-lg font-semibold tracking-tight text-slate-950">{pick(locale, "如何更新这个技能", "How to update this skill")}</h2>
+            <ol className="mt-3 list-decimal space-y-2 pl-5 text-xs leading-6 text-slate-600">
               <li>{pick(locale, "保持当前技能的 ", "Keep the current ")}<code>slug</code>{pick(locale, " 不变，例如 ", " unchanged, for example ")}<code>{detail.latest.slug}</code>。</li>
               <li>{pick(locale, "准备一个新的压缩包，并把 ", "Prepare a new archive and bump the ")}<code>version</code>{pick(locale, " 提升到比 ", " above ")}<code>{detail.latest.version}</code>{pick(locale, " 更高的新版本。", ".")}</li>
               <li>{pick(locale, "点击“提交新版本”进入更新表单，管理员审批通过后，详情页和 CLI 默认都将指向最新版本。", "Click “Submit new version” to open the update form. After approval, the detail page and CLI will point to the newest published version by default.")}</li>
             </ol>
-            <Link href={updateHref} className="button-primary mt-5 h-11 gap-2 px-5 text-sm">
+            <Link href={updateHref} className="button-primary mt-4 h-9 gap-2 px-4 text-xs">
               <PencilLine className="h-4 w-4" />
               {pick(locale, "去提交这个技能的新版本", "Submit a new version for this skill")}
             </Link>
           </div>
-          <div className="surface-card p-6">
+          <div className="surface-card p-4">
           <div className="section-eyebrow">{pick(locale, "版本摘要", "Version summary")}</div>
-          <h2 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">{pick(locale, "版本时间线", "Version timeline")}</h2>
-          <div className="mt-6 space-y-5">
+          <h2 className="mt-2 text-lg font-semibold tracking-tight text-slate-950">{pick(locale, "版本时间线", "Version timeline")}</h2>
+          <div className="mt-4 space-y-3">
             {detail.versions.map((version, index) => (
               <div key={version.id} className="relative pl-6">
                 {index !== detail.versions.length - 1 ? (
                   <div className="absolute left-[0.45rem] top-6 h-[calc(100%+1.1rem)] w-px bg-slate-200" />
                 ) : null}
                 <div className="absolute left-0 top-1.5 h-4 w-4 rounded-full border-4 border-white bg-sky-600 shadow-sm" />
-                <div className="rounded-3xl border border-slate-100 bg-slate-50 p-4">
+                <div className="rounded-2xl border border-slate-100 bg-slate-50 p-3">
                   <div className="flex items-start justify-between gap-4">
                     <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2 text-base font-semibold text-slate-950">
@@ -312,7 +313,7 @@ export default async function SkillDetailPage({ params, searchParams }: SkillPag
                         </span>
                       ) : null}
                     </div>
-                    <p className="mt-2 text-sm leading-6 text-slate-600">{version.changelog || pick(locale, "暂无更新说明", "No changelog provided")}</p>
+                    <p className="mt-1.5 text-xs leading-5 text-slate-600">{version.changelog || pick(locale, "暂无更新说明", "No changelog provided")}</p>
                     </div>
                     <div className="shrink-0 rounded-2xl bg-white px-3 py-2 text-right text-xs font-medium leading-5 text-slate-500 shadow-sm ring-1 ring-slate-100 whitespace-nowrap">
                       {formatDateTime(version.publishedAt ?? version.updatedAt, locale)}

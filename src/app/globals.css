@@ -3,10 +3,29 @@
 :root {
   --background: #f8fafc;
   --foreground: #0f172a;
+  --app-bg: radial-gradient(circle at top, #eef5ff, transparent 42%), linear-gradient(180deg, #ffffff 0%, #f8fafc 45%, #f1f5f9 100%);
+  --card-bg: rgba(255, 255, 255, 0.92);
+  --accent: #0369a1;
   --font-geist-sans: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
     "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   --font-geist-mono: "SFMono-Regular", SFMono-Regular, Menlo, Monaco, Consolas,
     "Liberation Mono", "Courier New", monospace;
+}
+
+[data-theme="midnight"] {
+  --background: #08111f;
+  --foreground: #e5edf8;
+  --app-bg: radial-gradient(circle at top, rgba(14, 165, 233, 0.2), transparent 38%), linear-gradient(180deg, #08111f 0%, #0f172a 100%);
+  --card-bg: rgba(15, 23, 42, 0.86);
+  --accent: #38bdf8;
+}
+
+[data-theme="emerald"] {
+  --background: #f0fdfa;
+  --foreground: #0f172a;
+  --app-bg: radial-gradient(circle at top, rgba(16, 185, 129, 0.16), transparent 42%), linear-gradient(180deg, #ffffff 0%, #f0fdfa 100%);
+  --card-bg: rgba(255, 255, 255, 0.92);
+  --accent: #059669;
 }
 
 @theme inline {
@@ -48,7 +67,8 @@ select {
 
 .markdown-body {
   color: rgb(51 65 85);
-  line-height: 1.85;
+  line-height: 1.7;
+  font-size: 0.92rem;
 }
 
 .markdown-body > * + * {
@@ -65,15 +85,15 @@ select {
 }
 
 .markdown-body h1 {
-  font-size: 2rem;
-}
-
-.markdown-body h2 {
   font-size: 1.5rem;
 }
 
-.markdown-body h3 {
+.markdown-body h2 {
   font-size: 1.25rem;
+}
+
+.markdown-body h3 {
+  font-size: 1.05rem;
 }
 
 .markdown-body ul,
@@ -133,23 +153,30 @@ select {
   overflow: hidden;
 }
 
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 .section-card {
   border: 1px solid rgba(226, 232, 240, 0.95);
-  background: rgba(255, 255, 255, 0.92);
-  border-radius: 2rem;
-  padding: 2rem;
-  box-shadow: 0 20px 70px -38px rgba(15, 23, 42, 0.35);
+  background: var(--card-bg);
+  border-radius: 1rem;
+  padding: 0.8rem;
+  box-shadow: 0 10px 34px -30px rgba(15, 23, 42, 0.3);
 }
 
 .surface-card {
   border: 1px solid rgba(226, 232, 240, 0.95);
-  background: rgba(255, 255, 255, 0.92);
-  border-radius: 1.75rem;
-  box-shadow: 0 16px 50px -35px rgba(15, 23, 42, 0.35);
+  background: var(--card-bg);
+  border-radius: 1rem;
+  box-shadow: 0 10px 34px -28px rgba(15, 23, 42, 0.32);
 }
 
 .section-eyebrow {
-  font-size: 0.75rem;
+  font-size: 0.62rem;
   line-height: 1rem;
   font-weight: 700;
   letter-spacing: 0.2em;
@@ -158,8 +185,8 @@ select {
 }
 
 .section-title {
-  font-size: clamp(2rem, 4vw, 3rem);
-  line-height: 1.1;
+  font-size: clamp(1.25rem, 2.4vw, 1.75rem);
+  line-height: 1.12;
   font-weight: 700;
   letter-spacing: -0.04em;
   color: rgb(15 23 42);
@@ -167,16 +194,17 @@ select {
 
 .section-description {
   color: rgb(71 85 105);
-  font-size: 1rem;
-  line-height: 2rem;
+  font-size: 0.8rem;
+  line-height: 1.35rem;
 }
 
 .field-input {
-  height: 3rem;
-  border-radius: 1rem;
+  height: 2.5rem;
+  border-radius: 0.8rem;
   border: 1px solid rgb(226 232 240);
   background: rgb(248 250 252);
-  padding: 0 1rem;
+  padding: 0 0.8rem;
+  font-size: 0.86rem;
   outline: none;
   transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
 }
@@ -194,6 +222,7 @@ select {
   justify-content: center;
   border-radius: 9999px;
   font-weight: 700;
+  font-size: 0.86rem;
   transition: all 0.2s ease;
 }
 
@@ -217,4 +246,145 @@ select {
 .button-secondary:hover {
   border-color: rgb(203 213 225);
   color: rgb(15 23 42);
+}
+
+.compact-table table {
+  width: 100%;
+  table-layout: fixed;
+  font-size: 0.72rem;
+}
+
+.compact-table th,
+.compact-table td {
+  padding: 0.34rem 0.45rem !important;
+  vertical-align: middle;
+  line-height: 1.12rem;
+  overflow-wrap: anywhere;
+}
+
+.compact-table th {
+  white-space: nowrap;
+  letter-spacing: 0.08em !important;
+}
+
+.compact-table textarea {
+  min-height: 3.25rem;
+  border-radius: 0.9rem;
+  font-size: 0.82rem;
+}
+
+.compact-table details {
+  border-radius: 0.9rem !important;
+  padding: 0.65rem !important;
+}
+
+.compact-table .field-input {
+  height: 2rem;
+  border-radius: 0.7rem;
+  font-size: 0.74rem;
+}
+
+.compact-table .button-primary,
+.compact-table .button-secondary,
+.compact-table button {
+  min-height: 2rem;
+  font-size: 0.74rem;
+}
+
+[data-theme="midnight"] body,
+[data-theme="midnight"] .text-slate-950,
+[data-theme="midnight"] .text-slate-900,
+[data-theme="midnight"] .text-slate-800 {
+  color: #e5edf8 !important;
+}
+
+[data-theme="midnight"] .text-slate-700,
+[data-theme="midnight"] .text-slate-600,
+[data-theme="midnight"] .text-slate-500 {
+  color: #9fb0c7 !important;
+}
+
+[data-theme="midnight"] .text-slate-400 {
+  color: #7f91aa !important;
+}
+
+[data-theme="midnight"] .section-card,
+[data-theme="midnight"] .surface-card,
+[data-theme="midnight"] .bg-white,
+[data-theme="midnight"] .bg-white\/90,
+[data-theme="midnight"] .bg-white\/80,
+[data-theme="midnight"] .bg-white\/70 {
+  border-color: rgba(125, 211, 252, 0.22) !important;
+  background: rgba(15, 23, 42, 0.84) !important;
+}
+
+[data-theme="midnight"] header,
+[data-theme="midnight"] footer,
+[data-theme="midnight"] .bg-slate-50,
+[data-theme="midnight"] .bg-slate-50\/90,
+[data-theme="midnight"] .bg-slate-50\/80,
+[data-theme="midnight"] .bg-slate-50\/70,
+[data-theme="midnight"] .bg-slate-100 {
+  border-color: rgba(125, 211, 252, 0.18) !important;
+  background: rgba(8, 17, 31, 0.86) !important;
+}
+
+[data-theme="midnight"] .border-slate-100,
+[data-theme="midnight"] .border-slate-200,
+[data-theme="midnight"] .border-slate-300,
+[data-theme="midnight"] .divide-slate-100 > :not([hidden]) ~ :not([hidden]),
+[data-theme="midnight"] .divide-slate-200 > :not([hidden]) ~ :not([hidden]) {
+  border-color: rgba(125, 211, 252, 0.18) !important;
+}
+
+[data-theme="midnight"] .section-eyebrow,
+[data-theme="midnight"] .text-sky-700 {
+  color: #38bdf8 !important;
+}
+
+[data-theme="midnight"] .section-title,
+[data-theme="midnight"] h1,
+[data-theme="midnight"] h2,
+[data-theme="midnight"] h3,
+[data-theme="midnight"] .markdown-body h1,
+[data-theme="midnight"] .markdown-body h2,
+[data-theme="midnight"] .markdown-body h3,
+[data-theme="midnight"] .markdown-body h4 {
+  color: #f8fbff !important;
+}
+
+[data-theme="midnight"] .markdown-body,
+[data-theme="midnight"] .markdown-body blockquote {
+  color: #c9d6e6 !important;
+}
+
+[data-theme="midnight"] .field-input,
+[data-theme="midnight"] input,
+[data-theme="midnight"] textarea,
+[data-theme="midnight"] select {
+  border-color: rgba(125, 211, 252, 0.22) !important;
+  background: rgba(2, 6, 23, 0.72) !important;
+  color: #e5edf8 !important;
+}
+
+[data-theme="midnight"] input::placeholder,
+[data-theme="midnight"] textarea::placeholder {
+  color: #71819a !important;
+}
+
+[data-theme="midnight"] .button-secondary {
+  border-color: rgba(125, 211, 252, 0.28) !important;
+  background: rgba(15, 23, 42, 0.9) !important;
+  color: #dce8f7 !important;
+}
+
+[data-theme="midnight"] .button-primary {
+  background: linear-gradient(135deg, #0284c7, #14b8a6) !important;
+  color: #ffffff !important;
+}
+
+[data-theme="midnight"] tr:hover,
+[data-theme="midnight"] .hover\:bg-slate-50\/70:hover,
+[data-theme="midnight"] .hover\:bg-white:hover {
+  background: rgba(30, 41, 59, 0.9) !important;
 }

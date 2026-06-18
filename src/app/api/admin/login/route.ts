@@ -1,5 +1,3 @@
-import { NextResponse } from "next/server";
-
 import { getAdminCookieOptions, validateAdminLogin } from "@/lib/auth";
 import { buildSeeOtherResponse } from "@/lib/site";
 

@@ -23,32 +23,32 @@ export default async function LeaderboardPage() {
         </p>
       </section>
 
-      <section className="grid gap-8 xl:grid-cols-2">
-        <div className="surface-card p-8">
+      <section className="grid gap-5 xl:grid-cols-2">
+        <div className="surface-card p-5">
           <div className="flex items-center gap-3 text-slate-950">
             <Flame className="h-5 w-5 text-rose-500" />
-            <h2 className="text-2xl font-semibold tracking-tight">{pick(locale, "收藏热度榜", "Most Favorited")}</h2>
+            <h2 className="text-xl font-semibold tracking-tight">{pick(locale, "收藏热度榜", "Most Favorited")}</h2>
           </div>
-          <div className="mt-6 space-y-4">
+          <div className="mt-4 space-y-3">
             {leaderboard.favorites.map((item, index) => (
               <Link
                 key={`favorite-${item.slug}`}
                 href={`/skills/${item.slug}`}
-                className="flex items-start justify-between gap-4 rounded-3xl border border-slate-100 bg-slate-50/90 p-5 transition hover:border-sky-200 hover:bg-white"
+                className="flex items-start justify-between gap-4 rounded-2xl border border-slate-100 bg-slate-50/90 p-3.5 transition hover:border-sky-200 hover:bg-white"
               >
-                <div className="flex gap-4">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white text-lg font-bold text-slate-900 shadow-sm">
+                <div className="flex gap-3">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-white text-sm font-bold text-slate-900 shadow-sm">
                     #{index + 1}
                   </div>
                   <div>
-                    <div className="text-lg font-semibold text-slate-950">{item.displayName}</div>
-                    <div className="mt-1 text-sm text-slate-500">
+                    <div className="text-sm font-semibold text-slate-950">{item.displayName}</div>
+                    <div className="mt-1 text-xs text-slate-500">
                       {item.slug} · {item.version} · {item.category}
                     </div>
-                    <p className="mt-3 line-clamp-3 text-sm leading-7 text-slate-600">{item.summary}</p>
+                    <p className="mt-2 line-clamp-2 text-xs leading-5 text-slate-600">{item.summary}</p>
                   </div>
                 </div>
-                <div className="text-right text-sm text-slate-500">
+                <div className="text-right text-xs text-slate-500">
                   <div className="font-semibold text-slate-950">{pick(locale, `${formatNumber(item.favoriteCount, locale)} 收藏`, `${formatNumber(item.favoriteCount, locale)} favorites`)}</div>
                   <div className="mt-1">{pick(locale, `${formatNumber(item.downloads, locale)} 下载`, `${formatNumber(item.downloads, locale)} downloads`)}</div>
                 </div>
@@ -63,31 +63,31 @@ export default async function LeaderboardPage() {
           </div>
         </div>
 
-        <div className="surface-card p-8">
+        <div className="surface-card p-5">
           <div className="flex items-center gap-3 text-slate-950">
             <Star className="h-5 w-5 text-amber-500" />
-            <h2 className="text-2xl font-semibold tracking-tight">{pick(locale, "评分口碑榜", "Top Rated")}</h2>
+            <h2 className="text-xl font-semibold tracking-tight">{pick(locale, "评分口碑榜", "Top Rated")}</h2>
           </div>
-          <div className="mt-6 space-y-4">
+          <div className="mt-4 space-y-3">
             {leaderboard.ratings.map((item, index) => (
               <Link
                 key={`rating-${item.slug}`}
                 href={`/skills/${item.slug}`}
-                className="flex items-start justify-between gap-4 rounded-3xl border border-slate-100 bg-slate-50/90 p-5 transition hover:border-sky-200 hover:bg-white"
+                className="flex items-start justify-between gap-4 rounded-2xl border border-slate-100 bg-slate-50/90 p-3.5 transition hover:border-sky-200 hover:bg-white"
               >
-                <div className="flex gap-4">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white text-lg font-bold text-slate-900 shadow-sm">
+                <div className="flex gap-3">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-white text-sm font-bold text-slate-900 shadow-sm">
                     <Medal className="h-5 w-5 text-amber-500" />
                   </div>
                   <div>
-                    <div className="text-lg font-semibold text-slate-950">{item.displayName}</div>
-                    <div className="mt-1 text-sm text-slate-500">
+                    <div className="text-sm font-semibold text-slate-950">{item.displayName}</div>
+                    <div className="mt-1 text-xs text-slate-500">
                       {item.slug} · {item.version} · {item.category}
                     </div>
-                    <p className="mt-3 line-clamp-3 text-sm leading-7 text-slate-600">{item.summary}</p>
+                    <p className="mt-2 line-clamp-2 text-xs leading-5 text-slate-600">{item.summary}</p>
                   </div>
                 </div>
-                <div className="text-right text-sm text-slate-500">
+                <div className="text-right text-xs text-slate-500">
                   <div className="font-semibold text-slate-950">{item.averageRating.toFixed(1)} / 5</div>
                   <div className="mt-1">{pick(locale, `${item.ratingCount} 条评分 · 第 ${index + 1} 名`, `${item.ratingCount} rating(s) · Rank #${index + 1}`)}</div>
                 </div>

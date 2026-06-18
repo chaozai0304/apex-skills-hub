@@ -13,11 +13,13 @@ export async function POST(request: Request) {
 
   try {
     const body = (await request.json()) as {
+      projectId?: string;
       repositoryTreeUrl?: string;
       token?: string;
     };
 
     const branches = await getGitLabBranches({
+      projectId: String(body.projectId ?? ""),
       repositoryTreeUrl: String(body.repositoryTreeUrl ?? ""),
       token: String(body.token ?? ""),
     });

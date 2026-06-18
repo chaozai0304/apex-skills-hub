@@ -1,12 +1,14 @@
-import { Activity, RefreshCw, ShieldCheck, Trash2, UserRoundCog, Users } from "lucide-react";
+import { Activity, Download, Eye, RefreshCw, ShieldCheck, Trash2, UserRoundCog, Users } from "lucide-react";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { AppShell } from "@/components/app-shell";
-import { GitLabSyncForm } from "@/components/gitlab-sync-form";
+import { FeishuConfigForm } from "@/components/feishu-config-form";
+import { GitLabProjectsTable } from "@/components/gitlab-projects-table";
 import { StatusBadge } from "@/components/status-badge";
-import { isAdminAuthenticated } from "@/lib/auth";
-import { getDashboardData, getGitLabSyncConfigSummary } from "@/lib/store";
+import { UserEditButton, UserManagementActions } from "@/components/user-management-actions";
+import { getCurrentUser, isAdminAuthenticated } from "@/lib/auth";
+import { getDashboardData, getFeishuNotificationSummary, getGitLabSyncConfigSummary, getProjectAdminScope, listProjectOptions } from "@/lib/store";
 import { formatDateTime } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
@@ -16,7 +18,8 @@ const ADMIN_TABS = [
   { key: "users", label: "用户管理", icon: UserRoundCog },
   { key: "skills", label: "技能列表", icon: Trash2 },
   { key: "logs", label: "审批日志", icon: Activity },
-  { key: "sync", label: "同步配置", icon: RefreshCw },
+  { key: "sync", label: "项目配置", icon: RefreshCw },
+  { key: "feishu", label: "飞书配置", icon: Activity },
 ] as const;
 
 type AdminTabKey = (typeof ADMIN_TABS)[number]["key"];
@@ -41,6 +44,7 @@ type AdminPageProps = {
     userCreated?: string;
     userUpdated?: string;
     userError?: string;
+    skillUpdated?: string;
     skillDeleted?: string;
     skillError?: string;
     syncSaved?: string;
@@ -52,31 +56,43 @@ type AdminPageProps = {
     gitlabSyncError?: string;
     tab?: string;
     q?: string;
+    project?: string;
     page?: string;
   }>;
 };
 
 export default async function AdminPage({ searchParams }: AdminPageProps) {
   const isAdmin = await isAdminAuthenticated();
-  if (!isAdmin) {
+  const currentUser = isAdmin ? null : await getCurrentUser();
+  const projectScope = isAdmin ? [] : await getProjectAdminScope(currentUser?.id);
+  if (!isAdmin && !projectScope.length) {
     redirect("/admin/login?next=/admin");
   }
 
   const resolvedSearchParams = await searchParams;
-  const [{ pending, recentPublished, users, logs, allSkills }, gitLabSync] = await Promise.all([
-    getDashboardData(),
+  const [projects, { pending, recentPublished, users, logs, allSkills }, gitLabSync, feishuSync] = await Promise.all([
+    listProjectOptions(),
+    getDashboardData(isAdmin ? undefined : { projectIds: projectScope }),
     getGitLabSyncConfigSummary(),
+    getFeishuNotificationSummary(),
   ]);
-  const activeTab = isAdminTabKey(resolvedSearchParams.tab) ? resolvedSearchParams.tab : "pending";
+  const requestedTab = isAdminTabKey(resolvedSearchParams.tab) ? resolvedSearchParams.tab : "pending";
+  const activeTab = !isAdmin && (requestedTab === "users" || requestedTab === "logs" || requestedTab === "sync" || requestedTab === "feishu") ? "pending" : requestedTab;
   const query = resolvedSearchParams.q?.trim() ?? "";
+  const accessibleProjects = isAdmin ? projects : projects.filter((project) => projectScope.includes(project.id));
+  const selectedProject = accessibleProjects.some((project) => project.id === resolvedSearchParams.project)
+    ? resolvedSearchParams.project
+    : "";
   const page = normalizePage(resolvedSearchParams.page);
 
-  const pendingItems = applyPendingQuery(pending, query);
+  const projectFilteredPending = selectedProject ? pending.filter((item) => item.projectId === selectedProject) : pending;
+  const projectFilteredSkills = selectedProject ? allSkills.filter((item) => item.projectId === selectedProject) : allSkills;
+  const pendingItems = applyPendingQuery(projectFilteredPending, query);
   const userItems = applyUserQuery(users, query);
-  const allSkillGroups = groupManagedSkills(allSkills);
-  const matchedSkillSlugs = new Set(applySkillQuery(allSkills, query).map((item) => item.slug));
+  const allSkillGroups = groupManagedSkills(projectFilteredSkills);
+  const matchedSkillSlugs = new Set(applySkillQuery(projectFilteredSkills, query).map((item) => item.slug));
   const skillItems = groupManagedSkills(
-    query ? allSkills.filter((item) => matchedSkillSlugs.has(item.slug)) : allSkills,
+    query ? projectFilteredSkills.filter((item) => matchedSkillSlugs.has(item.slug)) : projectFilteredSkills,
   );
   const logItems = applyLogQuery(logs, query);
 
@@ -85,7 +101,8 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
     users: userItems.length,
     skills: skillItems.length,
     logs: logItems.length,
-    sync: 1,
+    sync: gitLabSync.projects?.length ?? 1,
+    feishu: feishuSync.enabled ? 1 : 0,
   };
 
   const paginatedPending = paginate(pendingItems, page, PAGE_SIZE);
@@ -113,7 +130,9 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
           ? "技能列表管理"
           : activeTab === "logs"
             ? "审批日志"
-            : "GitLab 同步配置";
+            : activeTab === "sync"
+              ? "项目配置"
+              : "飞书配置";
   const activeDescription =
     activeTab === "pending"
       ? "集中处理待审批技能，支持按标题、slug、作者进行搜索并分页查看。"
@@ -122,33 +141,34 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
         : activeTab === "skills"
           ? "按 slug 合并维护技能，支持查看多个版本，并可在删除时选择是否同步清理 GitLab 镜像目录。"
           : activeTab === "logs"
-            ? "按时间倒序查看关键操作日志，支持检索操作者、动作、目标与消息内容。"
-            : "配置一个 GitLab 目录页地址和授权码，审批发布成功后会把技能文件自动同步到对应目录；同名技能会直接更新。";
-  const currentAdminHref = buildAdminHref(activeTab, query, activePagination.page);
+            ? "按时间倒序查看关键操作日志。"
+            : activeTab === "sync"
+              ? "维护项目 GitLab 目标和负责人。"
+              : "配置飞书 App 与消息发送目标。";
+  const currentAdminHref = buildAdminHref(activeTab, query, activePagination.page, selectedProject);
 
   return (
     <AppShell>
-      <section className="section-card">
-        <div className="section-eyebrow">Review Console</div>
-        <h1 className="section-title mt-3">超级管理员审批控制台</h1>
-        <p className="section-description mt-4 max-w-3xl">
-          处理作者提交的 skills，决定是否发布到公开目录与 registry API。现在还支持用户状态管理、技能删除以及审批日志追踪，控制台终于不只是“点通过”的单按钮宇宙了。
-        </p>
+      <section className="section-card compact-table flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div className="section-eyebrow">Review Console</div>
+          <h1 className="mt-1 text-xl font-semibold tracking-tight text-slate-950">超级管理员审批控制台</h1>
+        </div>
       </section>
 
-      <section className="grid gap-5 lg:grid-cols-4">
+      <section className="grid gap-3 lg:grid-cols-4">
         {[
           { label: "待审批", value: String(pending.length), icon: ShieldCheck },
           { label: "已建用户", value: String(users.length), icon: Users },
           { label: "可管理技能", value: String(allSkillGroups.length), icon: Trash2 },
           { label: "最近日志", value: String(logs.length), icon: Activity },
         ].map((item) => (
-          <div key={item.label} className="surface-card p-5">
+          <div key={item.label} className="surface-card p-3.5">
             <div className="flex items-center justify-between">
-              <div className="text-sm font-medium text-slate-500">{item.label}</div>
-              <item.icon className="h-5 w-5 text-sky-700" />
+              <div className="text-xs font-medium text-slate-500">{item.label}</div>
+              <item.icon className="h-4 w-4 text-sky-700" />
             </div>
-            <div className="mt-4 text-3xl font-semibold tracking-tight text-slate-950">{item.value}</div>
+            <div className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">{item.value}</div>
           </div>
         ))}
       </section>
@@ -174,6 +194,12 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
       {resolvedSearchParams.skillDeleted ? (
         <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-4 text-sm text-emerald-700">
           {resolvedSearchParams.skillDeleted}
+        </div>
+      ) : null}
+
+      {resolvedSearchParams.skillUpdated ? (
+        <div className="whitespace-pre-line rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-4 text-sm text-emerald-700">
+          {resolvedSearchParams.skillUpdated}
         </div>
       ) : null}
 
@@ -225,23 +251,23 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
         </div>
       ) : null}
 
-      <section className="section-card">
-        <div className="flex flex-wrap gap-3">
-          {ADMIN_TABS.map((tab) => {
-            const href = buildAdminHref(tab.key, query, 1);
+      <section className="section-card compact-table">
+        <div className="flex flex-wrap gap-2">
+          {ADMIN_TABS.filter((tab) => isAdmin || (tab.key !== "users" && tab.key !== "logs" && tab.key !== "sync" && tab.key !== "feishu")).map((tab) => {
+            const href = buildAdminHref(tab.key, query, 1, selectedProject);
             const isActive = tab.key === activeTab;
             return (
               <Link
                 key={tab.key}
                 href={href}
-                className={`inline-flex h-12 items-center gap-2 rounded-2xl px-5 text-sm font-semibold transition ${
+                className={`inline-flex h-9 items-center gap-1.5 rounded-xl px-3 text-xs font-semibold transition ${
                   isActive
                     ? "bg-slate-950 !text-white shadow-[0_14px_35px_-20px_rgba(15,23,42,0.6)]"
                     : "border border-slate-200 bg-white text-slate-600 hover:border-sky-200 hover:text-sky-700"
                 }`}
                 aria-current={isActive ? "page" : undefined}
               >
-                <tab.icon className="h-4 w-4" />
+                <tab.icon className="h-3.5 w-3.5" />
                 {tab.label}
                 <span className={`rounded-full px-2 py-0.5 text-xs ${isActive ? "bg-white/10 !text-white" : "bg-slate-100 text-slate-500"}`}>
                   {tab.key === "pending"
@@ -252,30 +278,38 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
                         ? allSkillGroups.length
                         : tab.key === "logs"
                           ? logs.length
-                          : 1}
+                          : tab.key === "sync"
+                            ? gitLabSync.projects?.length ?? 1
+                            : feishuSync.enabled ? 1 : 0}
                 </span>
               </Link>
             );
           })}
         </div>
 
-        <div className="mt-6 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div className="mt-4 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <h2 className="text-2xl font-semibold tracking-tight text-slate-950">{activeTitle}</h2>
-            <p className="mt-2 text-sm leading-7 text-slate-500">{activeDescription}</p>
+            <h2 className="text-lg font-semibold tracking-tight text-slate-950">{activeTitle}</h2>
+            <p className="mt-1 text-xs leading-5 text-slate-500">{activeDescription}</p>
           </div>
 
-          {activeTab !== "sync" ? (
-            <form className="flex w-full max-w-xl gap-3" action="/admin" method="get">
+          {activeTab !== "sync" && activeTab !== "feishu" ? (
+            <form className="flex w-full max-w-2xl flex-col gap-2 md:flex-row" action="/admin" method="get">
               <input type="hidden" name="tab" value={activeTab} />
+              <select name="project" defaultValue={selectedProject} className="field-input h-9 md:w-48">
+                <option value="">全部项目</option>
+                {accessibleProjects.map((project) => (
+                  <option key={project.id} value={project.id}>{project.name}</option>
+                ))}
+              </select>
               <input
                 type="text"
                 name="q"
                 defaultValue={query}
                 placeholder={getSearchPlaceholder(activeTab)}
-                className="field-input h-12 flex-1"
+                className="field-input h-9 flex-1"
               />
-              <button type="submit" className="button-primary h-12 px-5 text-sm">
+              <button type="submit" className="button-primary h-9 px-4 text-xs">
                 搜索
               </button>
             </form>
@@ -283,103 +317,45 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
         </div>
 
         {activeTab === "users" ? (
-          <div className="mt-6 rounded-[1.75rem] border border-slate-200 bg-slate-50/80 p-6">
-            <div className="mb-4 flex items-center gap-3">
-              <UserRoundCog className="h-5 w-5 text-sky-700" />
-              <h3 className="text-lg font-semibold text-slate-950">创建普通用户</h3>
-            </div>
-            <form action="/api/admin/users" method="post" className="grid gap-4">
-              <input type="hidden" name="intent" value="create" />
-              <div className="grid gap-4 md:grid-cols-2">
-                <label className="grid gap-2 text-sm text-slate-600">
-                  用户名
-                  <input name="username" required className="field-input" />
-                </label>
-                <label className="grid gap-2 text-sm text-slate-600">
-                  显示名称
-                  <input name="displayName" required className="field-input" />
-                </label>
-              </div>
-              <label className="grid gap-2 text-sm text-slate-600">
-                初始密码
-                <input name="password" type="password" required className="field-input" />
-              </label>
-              <button type="submit" className="button-primary h-12 px-6 text-sm">
-                创建普通用户
-              </button>
-            </form>
-          </div>
+          <UserManagementActions />
         ) : null}
 
         {activeTab === "sync" ? (
-          <div className="mt-6 grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
-            <div className="rounded-[1.5rem] border border-slate-200 bg-white p-6">
-              <h3 className="text-lg font-semibold text-slate-950">GitLab 同步参数</h3>
-              <p className="mt-2 text-sm leading-7 text-slate-500">
-                请填写 GitLab 仓库目录页地址，例如 <code>http://host/group/project/-/tree/master/.github/skills</code>。
-                系统会在该目录下以 <code>{`<slug>/`}</code> 为子目录同步技能文件。
-              </p>
+          <div className="mt-4">
+            <div className="rounded-xl border border-slate-200 bg-white p-3.5">
+              <h3 className="text-sm font-semibold text-slate-950">GitLab 项目参数</h3>
 
               {gitLabSync.issue ? (
-                <div className={`mt-4 rounded-2xl border px-4 py-3 text-sm ${gitLabSync.storageReady === false ? "border-amber-200 bg-amber-50 text-amber-800" : "border-rose-200 bg-rose-50 text-rose-700"}`}>
+                <div className={`mt-3 rounded-xl border px-3 py-2 text-xs ${gitLabSync.storageReady === false ? "border-amber-200 bg-amber-50 text-amber-800" : "border-rose-200 bg-rose-50 text-rose-700"}`}>
                   {gitLabSync.issue}
                 </div>
               ) : null}
 
-              <GitLabSyncForm summary={gitLabSync} />
-            </div>
-
-            <div className="rounded-[1.5rem] border border-slate-200 bg-slate-50/80 p-6">
-              <h3 className="text-lg font-semibold text-slate-950">当前状态</h3>
-              <div className="mt-4 space-y-3 text-sm text-slate-600">
-                <div className="flex items-center justify-between gap-4 rounded-2xl bg-white px-4 py-3">
-                  <span>同步状态</span>
-                  <span className={`rounded-full px-3 py-1 text-xs font-semibold ${gitLabSync.enabled ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-600"}`}>
-                    {gitLabSync.enabled ? "已启用" : "未启用"}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between gap-4 rounded-2xl bg-white px-4 py-3">
-                  <span>Token</span>
-                  <div className="flex items-center gap-3">
-                    {gitLabSync.maskedToken ? <span className="text-xs text-slate-500">{gitLabSync.maskedToken}</span> : null}
-                    <span className={`rounded-full px-3 py-1 text-xs font-semibold ${gitLabSync.hasToken ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
-                      {gitLabSync.hasToken ? "已保存" : "未配置"}
-                    </span>
-                  </div>
-                </div>
-                <div className="rounded-2xl bg-white px-4 py-3">
-                  <div className="text-xs uppercase tracking-[0.18em] text-slate-400">Project</div>
-                  <div className="mt-2 font-medium text-slate-900">{gitLabSync.projectPath || "尚未解析"}</div>
-                </div>
-                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-1">
-                  <div className="rounded-2xl bg-white px-4 py-3">
-                    <div className="text-xs uppercase tracking-[0.18em] text-slate-400">Branch</div>
-                    <div className="mt-2 font-medium text-slate-900">{gitLabSync.branch || "尚未解析"}</div>
-                  </div>
-                  <div className="rounded-2xl bg-white px-4 py-3">
-                    <div className="text-xs uppercase tracking-[0.18em] text-slate-400">Base Path</div>
-                    <div className="mt-2 font-medium text-slate-900 break-all">{gitLabSync.basePath || "/"}</div>
-                  </div>
-                </div>
-                <div className="rounded-2xl bg-white px-4 py-3">
-                  <div className="text-xs uppercase tracking-[0.18em] text-slate-400">最近更新</div>
-                  <div className="mt-2 font-medium text-slate-900">{gitLabSync.updatedAt ? formatDateTime(gitLabSync.updatedAt) : "尚未保存配置"}</div>
-                </div>
-                <div className="rounded-2xl bg-white px-4 py-3">
-                  <div className="text-xs uppercase tracking-[0.18em] text-slate-400">Storage</div>
-                  <div className="mt-2 font-medium text-slate-900">{gitLabSync.storageReady === false ? "等待数据库迁移" : "配置表可用"}</div>
-                </div>
-              </div>
+              <GitLabProjectsTable summary={gitLabSync} users={users} />
             </div>
           </div>
+        ) : activeTab === "feishu" ? (
+          <div className="mt-4">
+            <FeishuConfigForm summary={feishuSync} />
+          </div>
         ) : (
-        <div className="mt-6 overflow-x-auto rounded-[1.5rem] border border-slate-200">
+          <div className="compact-table mt-5 overflow-hidden rounded-2xl border border-slate-200">
           {activeTab === "pending" ? (
             <table className="min-w-full divide-y divide-slate-200 text-sm text-slate-600">
-              <thead className="bg-slate-50/90 text-left text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+              <colgroup>
+                <col className="w-[25%]" />
+                <col className="w-[9%]" />
+                <col className="w-[12%]" />
+                <col className="w-[10%]" />
+                <col className="w-[15%]" />
+                <col className="w-[18%]" />
+                <col className="w-[13%]" />
+              </colgroup>
+              <thead className="bg-slate-50/90 text-left text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
                 <tr>
                   <th className="px-4 py-3">技能</th>
                   <th className="px-4 py-3">作者</th>
+                  <th className="px-4 py-3">项目</th>
                   <th className="px-4 py-3">分类</th>
                   <th className="px-4 py-3">提交时间</th>
                   <th className="px-4 py-3">审核备注</th>
@@ -389,47 +365,99 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
               <tbody className="divide-y divide-slate-100 bg-white/90">
                 {paginatedPending.items.length ? (
                   paginatedPending.items.map((item) => (
-                    <tr key={item.id} className="align-top hover:bg-slate-50/70">
-                      <td className="px-4 py-4">
-                        <div className="font-semibold text-slate-950">{item.displayName}</div>
-                        <div className="mt-1 text-xs text-slate-500">{item.slug} · {item.version}</div>
-                        <p className="mt-2 max-w-md text-sm leading-6 text-slate-600">{item.summary}</p>
+                    <tr key={item.id} className="align-middle hover:bg-slate-50/70">
+                      <td className="px-4 py-3">
+                        <Link
+                          href={buildSubmissionPreviewHref(item.id, currentAdminHref)}
+                          className="inline-flex items-center gap-1.5 font-semibold text-slate-950 transition hover:text-sky-700"
+                        >
+                          <Eye className="h-3.5 w-3.5 text-slate-400" />
+                          <span>{item.displayName}</span>
+                        </Link>
+                        <div className="mt-1 text-[11px] text-slate-500">{item.slug} · {item.version}</div>
+                        <p className="mt-1 line-clamp-2 max-w-md text-[11px] leading-5 text-slate-500">{item.summary}</p>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          <Link
+                            href={buildSubmissionPreviewHref(item.id, currentAdminHref)}
+                            className="inline-flex h-7 items-center gap-1.5 rounded-full border border-sky-100 bg-sky-50 px-2.5 text-[11px] font-semibold text-sky-700 transition hover:bg-sky-100"
+                          >
+                            <Eye className="h-3.5 w-3.5" />
+                            查看内容
+                          </Link>
+                          <a
+                            href={`/api/admin/submissions/${item.id}/download`}
+                            className="inline-flex h-7 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 text-[11px] font-semibold text-slate-700 transition hover:border-sky-200 hover:text-sky-700"
+                          >
+                            <Download className="h-3.5 w-3.5" />
+                            下载 ZIP
+                          </a>
+                        </div>
                       </td>
-                      <td className="px-4 py-4 whitespace-nowrap">{item.authorName}</td>
-                      <td className="px-4 py-4 whitespace-nowrap">
+                      <td className="px-4 py-3 whitespace-nowrap text-xs">{item.authorName}</td>
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        <span className="rounded-full bg-sky-50 px-2.5 py-1 text-[11px] font-semibold text-sky-700">{item.projectName}</span>
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap">
                         <StatusBadge status={item.status} />
-                        <div className="mt-2 text-xs text-slate-500">{item.category}</div>
+                        <div className="mt-1 text-[11px] text-slate-500">{item.category}</div>
                       </td>
-                      <td className="px-4 py-4 whitespace-nowrap text-slate-500">{formatDateTime(item.createdAt)}</td>
-                      <td className="px-4 py-4 min-w-[16rem]">
-                        <form action={`/api/admin/review/${item.id}`} method="post" className="grid gap-3">
-                          <textarea name="reviewNotes" rows={3} defaultValue={item.reviewNotes} className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 outline-none focus:border-sky-300 focus:bg-white" />
-                          <div className="flex flex-wrap gap-2">
-                            <button name="decision" value="approve" className="h-10 rounded-2xl bg-emerald-600 px-4 text-xs font-semibold text-white transition hover:bg-emerald-500">
+                      <td className="px-4 py-3 whitespace-nowrap text-xs text-slate-500">{formatDateTime(item.createdAt)}</td>
+                      <td className="px-4 py-3">
+                        <textarea
+                          form={`review-${item.id}`}
+                          name="reviewNotes"
+                          rows={2}
+                          defaultValue={item.reviewNotes}
+                          placeholder="请填写审批意见"
+                          className="h-16 w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs outline-none transition focus:border-sky-300 focus:bg-white"
+                        />
+                      </td>
+                      <td className="px-4 py-3">
+                        <form id={`review-${item.id}`} action={`/api/admin/review/${item.id}`} method="post" className="grid gap-2" data-loading-message="正在提交审批结果...">
+                          <div className="grid gap-2">
+                            <button name="decision" value="approve" data-loading-message="正在审批发布..." className="inline-flex h-8 items-center justify-center rounded-full bg-gradient-to-r from-emerald-600 to-teal-600 px-3 text-xs font-semibold text-white shadow-sm transition hover:from-emerald-500 hover:to-teal-500">
                               审批发布
                             </button>
-                            <button name="decision" value="reject" className="h-10 rounded-2xl bg-rose-600 px-4 text-xs font-semibold text-white transition hover:bg-rose-500">
+                            <button name="decision" value="reject" data-loading-message="正在驳回提交..." className="inline-flex h-8 items-center justify-center rounded-full border border-rose-100 bg-rose-50 px-3 text-xs font-semibold text-rose-700 transition hover:bg-rose-100">
                               驳回退回
                             </button>
                           </div>
                         </form>
+                        <form action={`/api/admin/skills/${item.id}/delete`} method="post" className="mt-2" data-loading-message="正在删除待审批技能...">
+                          <input type="hidden" name="deleteScope" value="single" />
+                          <input type="hidden" name="redirectTo" value={currentAdminHref} />
+                          <button type="submit" className="inline-flex h-8 w-full items-center justify-center rounded-full border border-rose-100 bg-white px-3 text-xs font-semibold text-rose-700 transition hover:bg-rose-50">
+                            删除提交
+                          </button>
+                        </form>
                       </td>
-                      <td className="px-4 py-4 whitespace-nowrap text-xs text-slate-500">文件数 {item.fileCount}</td>
                     </tr>
                   ))
                 ) : (
-                  <EmptyRow colSpan={6} text={query ? "没有匹配的待审批技能。" : "当前没有待审批记录。"} />
+                  <EmptyRow colSpan={7} text={query ? "没有匹配的待审批技能。" : "当前没有待审批记录。"} />
                 )}
               </tbody>
             </table>
           ) : null}
 
           {activeTab === "users" ? (
+            <div>
+            <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50 px-3 py-2">
+              <span className="text-xs text-slate-500">勾选用户后可批量删除</span>
+              <form id="bulk-delete-users" action="/api/admin/users" method="post" data-loading-message="正在批量删除用户...">
+                <input type="hidden" name="intent" value="deleteMany" />
+                <button className="inline-flex h-7 items-center rounded-full border border-rose-100 bg-rose-50 px-3 text-xs font-semibold text-rose-700 hover:bg-rose-100">批量删除</button>
+              </form>
+            </div>
             <table className="min-w-full divide-y divide-slate-200 text-sm text-slate-600">
               <thead className="bg-slate-50/90 text-left text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
                 <tr>
+                  <th className="px-4 py-3">选择</th>
                   <th className="px-4 py-3">用户名</th>
+                  <th className="px-4 py-3">邮箱</th>
                   <th className="px-4 py-3">显示名称</th>
+                  <th className="px-4 py-3">角色</th>
+                  <th className="px-4 py-3">组织</th>
                   <th className="px-4 py-3">状态</th>
                   <th className="px-4 py-3">创建时间</th>
                   <th className="px-4 py-3">操作</th>
@@ -439,8 +467,12 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
                 {paginatedUsers.items.length ? (
                   paginatedUsers.items.map((user) => (
                     <tr key={user.id} className="align-middle hover:bg-slate-50/70">
+                      <td className="px-4 py-3"><input form="bulk-delete-users" type="checkbox" name="userIds" value={user.id} className="h-4 w-4 rounded border-slate-300" /></td>
                       <td className="px-4 py-4 font-medium text-slate-900">{user.username}</td>
+                      <td className="px-4 py-4 text-xs text-slate-500">{user.email || "-"}</td>
                       <td className="px-4 py-4">{user.displayName}</td>
+                      <td className="px-4 py-4">{user.roleLabel || "成员"}</td>
+                      <td className="px-4 py-4">{user.organization || "-"}</td>
                       <td className="px-4 py-4">
                         <span className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${user.disabled ? "bg-rose-50 text-rose-700" : "bg-emerald-50 text-emerald-700"}`}>
                           {user.disabled ? "已停用" : "正常可用"}
@@ -448,22 +480,26 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
                       </td>
                       <td className="px-4 py-4 whitespace-nowrap">{formatDateTime(user.createdAt)}</td>
                       <td className="px-4 py-4">
-                        <form action="/api/admin/users" method="post">
+                        <div className="flex flex-wrap gap-1.5">
+                        <form action="/api/admin/users" method="post" data-loading-message="正在切换用户状态...">
                           <input type="hidden" name="intent" value="toggle" />
                           <input type="hidden" name="userId" value={user.id} />
                           <input type="hidden" name="disabled" value={user.disabled ? "false" : "true"} />
-                          <button type="submit" className={`${user.disabled ? "button-primary" : "button-secondary"} h-10 px-4 text-sm whitespace-nowrap`}>
+                          <button type="submit" className={`${user.disabled ? "button-primary" : "button-secondary"} h-7 px-2.5 text-[11px] whitespace-nowrap`}>
                             {user.disabled ? "重新启用" : "停用账户"}
                           </button>
                         </form>
+                        <UserEditButton user={user} />
+                        </div>
                       </td>
                     </tr>
                   ))
                 ) : (
-                  <EmptyRow colSpan={5} text={query ? "没有匹配的用户记录。" : "当前没有用户记录。"} />
+                  <EmptyRow colSpan={9} text={query ? "没有匹配的用户记录。" : "当前没有用户记录。"} />
                 )}
               </tbody>
             </table>
+            </div>
           ) : null}
 
           {activeTab === "skills" ? (
@@ -472,6 +508,7 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
                 <tr>
                   <th className="px-4 py-3">技能</th>
                   <th className="px-4 py-3">状态</th>
+                  <th className="px-4 py-3">项目</th>
                   <th className="px-4 py-3">分类</th>
                   <th className="px-4 py-3">更新时间</th>
                   <th className="px-4 py-3">下载</th>
@@ -487,31 +524,7 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
                         <div className="mt-1 text-xs text-slate-500">
                           {item.slug} · 最新 {item.latestVersion} · 共 {item.versionCount} 个版本
                         </div>
-                        <p className="mt-2 max-w-md text-sm leading-6 text-slate-600">{item.summary}</p>
-
-                        <details className="mt-4 rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
-                          <summary className="cursor-pointer list-none text-sm font-semibold text-slate-700">
-                            查看版本明细
-                          </summary>
-                          <div className="mt-3 space-y-3">
-                            {item.versions.map((version) => (
-                              <div key={version.id} className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
-                                <div className="flex flex-wrap items-center justify-between gap-3">
-                                  <div>
-                                    <div className="font-medium text-slate-900">{version.version}</div>
-                                    <div className="mt-1 text-xs text-slate-500">
-                                      {formatDateTime(version.updatedAt)} · 文件数 {version.fileCount} · 下载 {version.downloads}
-                                    </div>
-                                  </div>
-                                  <StatusBadge status={version.status} />
-                                </div>
-                                {version.reviewNotes ? (
-                                  <p className="mt-3 text-xs leading-6 text-slate-500">审核备注：{version.reviewNotes}</p>
-                                ) : null}
-                              </div>
-                            ))}
-                          </div>
-                        </details>
+                        <p className="mt-1 max-w-sm truncate text-xs text-slate-500">{item.summary}</p>
                       </td>
                       <td className="px-4 py-4 whitespace-nowrap">
                         <StatusBadge status={item.status} />
@@ -519,19 +532,50 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
                           已发布 {item.publishedCount} · 待审批 {item.pendingCount} · 已驳回 {item.rejectedCount}
                         </div>
                       </td>
+                      <td className="px-4 py-4 min-w-[12rem]">
+                        <div className="mb-2 rounded-full bg-sky-50 px-2.5 py-1 text-center text-xs font-semibold text-sky-700">{item.projectName}</div>
+                        <form action={`/api/admin/skills/${item.id}/project`} method="post" className="grid gap-1.5">
+                          <input type="hidden" name="redirectTo" value={currentAdminHref} />
+                          <select name="projectId" defaultValue={item.projectId} className="field-input h-10 text-xs">
+                            {accessibleProjects.map((project) => (
+                              <option key={project.id} value={project.id}>{project.name}</option>
+                            ))}
+                          </select>
+                          <button type="submit" className="button-secondary h-9 px-3 text-xs">切换项目并同步</button>
+                        </form>
+                      </td>
                       <td className="px-4 py-4 whitespace-nowrap">{item.category}</td>
                       <td className="px-4 py-4 whitespace-nowrap text-slate-500">{formatDateTime(item.updatedAt)}</td>
                       <td className="px-4 py-4 whitespace-nowrap">{item.totalDownloads}</td>
-                      <td className="px-4 py-4 min-w-[18rem]">
-                        <form action={`/api/admin/skills/${item.id}/delete`} method="post" className="grid gap-3">
+                      <td className="px-4 py-4 min-w-[16rem]">
+                        <details className="mb-2 rounded-xl border border-slate-200 bg-slate-50/80 p-2">
+                          <summary className="cursor-pointer list-none text-xs font-semibold text-slate-700">
+                            查看版本详情
+                          </summary>
+                          <div className="mt-2 max-h-48 space-y-2 overflow-y-auto">
+                            {item.versions.map((version) => (
+                              <div key={version.id} className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className="min-w-0">
+                                    <div className="truncate text-xs font-semibold text-slate-900">{version.version}</div>
+                                    <div className="mt-0.5 text-[11px] text-slate-500">
+                                      {formatDateTime(version.updatedAt)} · 文件 {version.fileCount} · 下载 {version.downloads}
+                                    </div>
+                                  </div>
+                                  <StatusBadge status={version.status} />
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </details>
+                        <form action={`/api/admin/skills/${item.id}/delete`} method="post" className="grid gap-2">
                           <input type="hidden" name="redirectTo" value={currentAdminHref} />
-                          <label className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">
+                          <label className="flex items-start gap-2 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-[11px] leading-4 text-slate-600">
                             <input type="checkbox" name="deleteFromGitLab" className="mt-0.5 h-4 w-4 rounded border-slate-300" />
-                            <span>同时删除 GitLab 仓库中的同名技能目录（默认不删除，仅勾选时执行）</span>
+                            <span>同步删除 GitLab 镜像</span>
                           </label>
-                          <div className="text-xs leading-5 text-slate-500">删除将移除该技能的全部版本记录及本地归档文件。</div>
-                          <button type="submit" className="inline-flex h-10 items-center justify-center gap-2 rounded-2xl bg-rose-600 px-4 text-sm font-semibold text-white transition hover:bg-rose-500">
-                            <Trash2 className="h-4 w-4" />
+                          <button type="submit" className="inline-flex h-8 items-center justify-center gap-1.5 rounded-full bg-rose-600 px-3 text-xs font-semibold text-white transition hover:bg-rose-500">
+                            <Trash2 className="h-3.5 w-3.5" />
                             删除整组技能
                           </button>
                         </form>
@@ -539,7 +583,7 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
                     </tr>
                   ))
                 ) : (
-                  <EmptyRow colSpan={6} text={query ? "没有匹配的技能记录。" : "当前没有技能记录。"} />
+                  <EmptyRow colSpan={7} text={query ? "没有匹配的技能记录。" : "当前没有技能记录。"} />
                 )}
               </tbody>
             </table>
@@ -588,7 +632,7 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
           {activePagination.totalPages > 1 ? (
             <div className="flex flex-wrap gap-2">
               <Link
-                href={buildAdminHref(activeTab, query, Math.max(1, activePagination.page - 1))}
+                href={buildAdminHref(activeTab, query, Math.max(1, activePagination.page - 1), selectedProject)}
                 className={`inline-flex h-10 items-center justify-center rounded-2xl px-4 text-sm font-semibold ${activePagination.page === 1 ? "cursor-not-allowed border border-slate-200 bg-slate-100 text-slate-400" : "button-secondary"}`}
                 aria-disabled={activePagination.page === 1}
               >
@@ -597,7 +641,7 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
               {Array.from({ length: activePagination.totalPages }, (_, index) => index + 1).map((pageNumber) => (
                 <Link
                   key={pageNumber}
-                  href={buildAdminHref(activeTab, query, pageNumber)}
+                  href={buildAdminHref(activeTab, query, pageNumber, selectedProject)}
                   className={`inline-flex h-10 min-w-10 items-center justify-center rounded-2xl px-3 text-sm font-semibold ${pageNumber === activePagination.page ? "bg-slate-950 !text-white shadow-[0_10px_30px_-18px_rgba(15,23,42,0.7)]" : "button-secondary"}`}
                   aria-current={pageNumber === activePagination.page ? "page" : undefined}
                 >
@@ -605,7 +649,7 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
                 </Link>
               ))}
               <Link
-                href={buildAdminHref(activeTab, query, Math.min(activePagination.totalPages, activePagination.page + 1))}
+                href={buildAdminHref(activeTab, query, Math.min(activePagination.totalPages, activePagination.page + 1), selectedProject)}
                 className={`inline-flex h-10 items-center justify-center rounded-2xl px-4 text-sm font-semibold ${activePagination.page === activePagination.totalPages ? "cursor-not-allowed border border-slate-200 bg-slate-100 text-slate-400" : "button-secondary"}`}
                 aria-disabled={activePagination.page === activePagination.totalPages}
               >
@@ -649,12 +693,20 @@ function normalizePage(value?: string) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
 }
 
-function buildAdminHref(tab: AdminTabKey, q: string, page: number) {
+function buildAdminHref(tab: AdminTabKey, q: string, page: number, project?: string) {
   const params = new URLSearchParams({ tab, page: String(page) });
   if (q.trim()) {
     params.set("q", q.trim());
   }
+  if (project?.trim()) {
+    params.set("project", project.trim());
+  }
   return `/admin?${params.toString()}`;
+}
+
+function buildSubmissionPreviewHref(submissionId: string, backTo: string) {
+  const params = new URLSearchParams({ backTo });
+  return `/admin/submissions/${submissionId}?${params.toString()}`;
 }
 
 function getSearchPlaceholder(tab: AdminTabKey) {
@@ -668,7 +720,9 @@ function getSearchPlaceholder(tab: AdminTabKey) {
     case "logs":
       return "搜索动作、操作者、目标或说明";
     case "sync":
-      return "同步配置不需要搜索";
+      return "项目配置不需要搜索";
+    case "feishu":
+      return "飞书配置不需要搜索";
   }
 }
 
@@ -719,6 +773,8 @@ function groupManagedSkills(items: Awaited<ReturnType<typeof getDashboardData>>[
         displayName: latest.displayName,
         summary: latest.summary,
         category: latest.category,
+        projectId: latest.projectId,
+        projectName: latest.projectName,
         status: latest.status,
         updatedAt: latest.updatedAt,
         latestVersion: latest.version,

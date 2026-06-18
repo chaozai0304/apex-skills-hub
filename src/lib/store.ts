@@ -15,20 +15,26 @@ import {
   syncSubmissionToGitLab,
   testGitLabConnection,
 } from "@/lib/gitlab-sync";
+import { sendFeishuCardMessage, type FeishuReceiveIdType } from "@/lib/feishu";
 import { hashPassword } from "@/lib/security";
+import { getOriginFromHeaders } from "@/lib/site";
 import type {
   ApprovalLogAction,
   ApprovalLogRecord,
   CatalogItem,
   FavoriteRecord,
+  FeishuNotificationConfig,
+  FeishuNotificationSummary,
   GitLabBranchOption,
   GitLabConnectionTestResult,
   GitLabSyncConfig,
   GitLabSyncConfigSummary,
+  GitLabSyncProject,
   GitLabSyncResult,
   HubStore,
   LeaderboardData,
   LeaderboardEntry,
+  ProjectOption,
   RatingRecord,
   ReviewDecision,
   SkillDetail,
@@ -53,12 +59,20 @@ const STORAGE_DIR = join(
 );
 const STORE_FILE = join(DATA_DIR, "records.json");
 const GITLAB_SYNC_SETTING_KEY = "gitlab-sync";
+const FEISHU_NOTIFICATION_SETTING_KEY = "feishu-notification";
+const ADMIN_PROFILE_SETTING_KEY = "admin-profile";
 const GITLAB_SYNC_STORAGE_MISSING = Symbol("gitlab-sync-storage-missing");
+const DEFAULT_PROJECT_ID = "global";
+const DEFAULT_PROJECT_NAME = "默认项目";
+const SUPER_ADMIN_PROJECT_ADMIN_ID = "__superadmin__";
 const REMOVED_TEST_SUBMISSION_IDS = new Set(["76558742-5817-4d0b-9a91-8a485eaff921"]);
 
 let initPromise: Promise<void> | null = null;
+let projectNameCache = new Map<string, string>([[DEFAULT_PROJECT_ID, DEFAULT_PROJECT_NAME]]);
 
 type CreateSubmissionInput = {
+  projectId?: string;
+  appOrigin?: string;
   slug: string;
   displayName: string;
   version: string;
@@ -69,6 +83,32 @@ type CreateSubmissionInput = {
   authorName: string;
   authorEmail: string;
   archive: Buffer;
+};
+
+type UpdateUserSubmissionInput = CreateSubmissionInput & {
+  submissionId: string;
+  user: Pick<UserRecord, "username" | "displayName" | "email">;
+};
+
+type ReviewSubmissionOptions = {
+  actorName?: string;
+  appOrigin?: string;
+};
+
+type DashboardScope = {
+  projectIds?: string[];
+};
+
+type FeishuNotificationResult = {
+  attempted: boolean;
+  sent: boolean;
+  message: string;
+};
+
+type FeishuReceiver = {
+  receiveIdType: FeishuReceiveIdType;
+  receiveId: string;
+  label: string;
 };
 
 type SeedSpec = Omit<CreateSubmissionInput, "archive" | "tags"> & {
@@ -87,13 +127,28 @@ type SeedSpec = Omit<CreateSubmissionInput, "archive" | "tags"> & {
 
 type CreateUserInput = {
   username: string;
+  email?: string;
   displayName: string;
   password: string;
+  roleLabel?: string;
+  organization?: string;
   createdBy?: string;
 };
 
+type UpdateUserInput = {
+  userId: string;
+  displayName: string;
+  email?: string;
+  roleLabel?: string;
+  organization?: string;
+  password?: string;
+  actorName?: string;
+};
+
 type DbSubmission = NonNullable<Awaited<ReturnType<typeof db.submission.findFirst>>>;
-type DbUser = NonNullable<Awaited<ReturnType<typeof db.user.findUnique>>>;
+// Prisma client types can lag behind local migrations in the editor; keep user row mapping tolerant.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type DbUser = any;
 type DbFavorite = NonNullable<Awaited<ReturnType<typeof db.favorite.findFirst>>>;
 type DbRating = NonNullable<Awaited<ReturnType<typeof db.rating.findFirst>>>;
 type DbApprovalLog = NonNullable<Awaited<ReturnType<typeof db.approvalLog.findFirst>>>;
@@ -107,12 +162,13 @@ export async function ensureStore() {
   await initPromise;
 }
 
-export async function listPublishedCatalog(query?: string) {
+export async function listPublishedCatalog(query?: string, projectId?: string) {
   await ensureStore();
+  await listProjectOptions();
   const latest = getLatestPublishedBySlug(
     mapSubmissions(
       await db.submission.findMany({
-        where: { status: "published" },
+        where: { status: "published", ...buildSubmissionProjectWhere(projectId) },
         orderBy: { updatedAt: "desc" },
       }),
     ),
@@ -127,25 +183,30 @@ export async function listPublishedCatalog(query?: string) {
   });
 }
 
-export async function listFeaturedSkills(limit = 3) {
-  const items = await listPublishedCatalog();
+export async function listFeaturedSkills(limit = 3, projectId?: string) {
+  const items = await listPublishedCatalog(undefined, projectId);
   return items.filter((item) => item.featured).slice(0, limit);
 }
 
-export async function listAllSubmissions() {
+export async function listAllSubmissions(projectIds?: string[]) {
   await ensureStore();
+  await listProjectOptions();
   return mapSubmissions(
     await db.submission.findMany({
+      where: buildSubmissionScopeWhere(projectIds),
       orderBy: { createdAt: "desc" },
     }),
   );
 }
 
-export async function getDashboardData() {
+export async function getDashboardData(scope?: DashboardScope) {
   await ensureStore();
+  await listProjectOptions();
+
+  const submissionWhere = buildSubmissionScopeWhere(scope?.projectIds);
 
   const [submissions, users, logs] = await Promise.all([
-    db.submission.findMany({ orderBy: { updatedAt: "desc" } }),
+    db.submission.findMany({ where: submissionWhere, orderBy: { updatedAt: "desc" } }),
     db.user.findMany({ orderBy: { username: "asc" } }),
     db.approvalLog.findMany({ orderBy: { createdAt: "desc" }, take: 12 }),
   ]);
@@ -167,10 +228,14 @@ export async function getDashboardData() {
   };
 }
 
-export async function getHubStats() {
+export async function getHubStats(projectId?: string) {
   await ensureStore();
+  await listProjectOptions();
   const submissions = mapSubmissions(
-    await db.submission.findMany({ orderBy: { updatedAt: "desc" } }),
+    await db.submission.findMany({
+      where: buildSubmissionProjectWhere(projectId),
+      orderBy: { updatedAt: "desc" },
+    }),
   );
   const published = submissions.filter((item) => item.status === "published");
   const latestPublished = getLatestPublishedBySlug(submissions);
@@ -185,6 +250,7 @@ export async function getHubStats() {
 
 export async function getSkillDetail(slug: string): Promise<SkillDetail | null> {
   await ensureStore();
+  await listProjectOptions();
   const versions = mapSubmissions(
     await db.submission.findMany({
       where: { slug, status: "published" },
@@ -231,11 +297,55 @@ export async function listUsers() {
   return mapUsers(await db.user.findMany({ orderBy: { username: "asc" } }));
 }
 
+export async function getAdminDisplayName() {
+  await ensureStore();
+  const record = await readAppSettingRecord(ADMIN_PROFILE_SETTING_KEY);
+  if (record === GITLAB_SYNC_STORAGE_MISSING || !record?.value || typeof record.value !== "object" || Array.isArray(record.value)) {
+    return "超级管理员";
+  }
+  const displayName = (record.value as { displayName?: unknown }).displayName;
+  return typeof displayName === "string" && displayName.trim() ? displayName.trim() : "超级管理员";
+}
+
+export async function getAdminProfile() {
+  await ensureStore();
+  const record = await readAppSettingRecord(ADMIN_PROFILE_SETTING_KEY);
+  if (record === GITLAB_SYNC_STORAGE_MISSING || !record?.value || typeof record.value !== "object" || Array.isArray(record.value)) {
+    return { displayName: "超级管理员", email: "" };
+  }
+  const raw = record.value as { displayName?: unknown; email?: unknown };
+  const displayName = typeof raw.displayName === "string" && raw.displayName.trim() ? raw.displayName.trim() : "超级管理员";
+  const email = typeof raw.email === "string" ? raw.email.trim() : "";
+  return { displayName, email };
+}
+
+export async function updateAdminDisplayName(displayName: string) {
+  await updateAdminProfile({ displayName });
+}
+
+export async function updateAdminProfile(input: { displayName: string; email?: string }) {
+  await ensureStore();
+  const current = await getAdminProfile();
+  const nextName = input.displayName.trim();
+  const email = normalizeEmail(input.email ?? current.email, false);
+  if (!nextName) {
+    throw new Error("显示名称不能为空。");
+  }
+  await db.appSetting.upsert({
+    where: { key: ADMIN_PROFILE_SETTING_KEY },
+    update: { value: { displayName: nextName, email } as never, updatedAt: new Date() },
+    create: { key: ADMIN_PROFILE_SETTING_KEY, value: { displayName: nextName, email } as never, updatedAt: new Date() },
+  });
+}
+
 export async function createUserAccount(input: CreateUserInput) {
   await ensureStore();
   const username = input.username.trim().toLowerCase();
+  const email = normalizeEmail(input.email, false);
   const displayName = input.displayName.trim();
   const password = input.password.trim();
+  const roleLabel = input.roleLabel?.trim() || "成员";
+  const organization = input.organization?.trim() || "";
 
   if (!username) {
     throw new Error("用户名不能为空。");
@@ -260,13 +370,16 @@ export async function createUserAccount(input: CreateUserInput) {
     data: {
       id: randomUUID(),
       username,
+      email,
       displayName,
       passwordHash: hashPassword(password, secret),
       role: "user",
+      roleLabel,
+      organization,
       createdAt,
       createdBy: input.createdBy,
       disabled: false,
-    },
+    } as never,
   });
 
   await appendLog({
@@ -280,6 +393,101 @@ export async function createUserAccount(input: CreateUserInput) {
   });
 
   return mapUser(user);
+}
+
+export async function updateUserAccount(input: UpdateUserInput) {
+  await ensureStore();
+  const user = await db.user.findUnique({ where: { id: input.userId } });
+
+  if (!user) {
+    throw new Error("未找到目标用户。");
+  }
+
+  const displayName = input.displayName.trim();
+  if (!displayName) {
+    throw new Error("显示名称不能为空。");
+  }
+
+  const data: {
+    displayName: string;
+    email: string;
+    roleLabel: string;
+    organization: string;
+    passwordHash?: string;
+  } = {
+    displayName,
+    email: normalizeEmail(input.email, false),
+    roleLabel: input.roleLabel?.trim() || "成员",
+    organization: input.organization?.trim() || "",
+  };
+
+  if (input.password?.trim()) {
+    if (input.password.trim().length < 6) {
+      throw new Error("新密码至少需要 6 位。");
+    }
+    data.passwordHash = hashPassword(input.password.trim(), getAdminCredentials().sessionSecret);
+  }
+
+  const updated = await db.user.update({ where: { id: input.userId }, data });
+  await appendLog({
+    action: "user-enabled",
+    actorType: "admin",
+    actorName: input.actorName || "superadmin",
+    targetType: "user",
+    targetId: updated.id,
+    targetLabel: updated.username,
+    message: `更新用户 ${updated.username} 信息`,
+  });
+  return mapUser(updated);
+}
+
+export async function deleteUserAccounts(userIds: string[], actorName = "superadmin") {
+  await ensureStore();
+  const ids = [...new Set(userIds.filter(Boolean))];
+  if (!ids.length) {
+    throw new Error("请选择要删除的用户。");
+  }
+
+  const users = await db.user.findMany({ where: { id: { in: ids } } });
+  await db.favorite.deleteMany({ where: { userId: { in: ids } } });
+  await db.rating.deleteMany({ where: { userId: { in: ids } } });
+  const result = await db.user.deleteMany({ where: { id: { in: ids } } });
+
+  await appendLog({
+    action: "user-disabled",
+    actorType: "admin",
+    actorName,
+    targetType: "user",
+    targetId: ids.join(","),
+    targetLabel: users.map((user) => user.username).join(", ") || `${ids.length} users`,
+    message: `批量删除 ${result.count} 个用户`,
+  });
+
+  return result.count;
+}
+
+export async function importUserAccountsFromCsv(content: string, actorName = "superadmin") {
+  await ensureStore();
+  const lines = content.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const rows = lines[0]?.toLowerCase().includes("username") ? lines.slice(1) : lines;
+  let created = 0;
+
+  for (const line of rows) {
+    const [username = "", email = "", displayName = "", password = "", roleLabel = "成员", organization = ""] = line.split(",").map((value) => value.trim());
+    if (!username || !displayName || !password) {
+      continue;
+    }
+
+    const existing = await db.user.findUnique({ where: { username: username.toLowerCase() } });
+    if (existing) {
+      continue;
+    }
+
+    await createUserAccount({ username, email, displayName, password, roleLabel, organization, createdBy: actorName });
+    created += 1;
+  }
+
+  return created;
 }
 
 export async function updateUserStatus(userId: string, disabled: boolean, actorName = "superadmin") {
@@ -367,6 +575,8 @@ export async function getPublishedSubmission(slug: string, version?: string) {
 
 export async function createSubmission(input: CreateSubmissionInput) {
   await ensureStore();
+  const projects = await listProjectOptions();
+  const project = resolveProjectOption(input.projectId, projects);
   const slug = normalizeSlug(input.slug);
   const normalizedArchive = await normalizeSkillArchive(input.archive);
   const submittedDisplayName = input.displayName.trim();
@@ -399,7 +609,7 @@ export async function createSubmission(input: CreateSubmissionInput) {
       slug,
       displayName: submittedDisplayName,
       version: input.version.trim(),
-      namespace: "global",
+      namespace: project.id,
       summary: archiveMeta.summary,
       description: archiveMeta.description,
       changelog: input.changelog.trim() || "首个候选版本，等待管理员审批发布。",
@@ -431,14 +641,121 @@ export async function createSubmission(input: CreateSubmissionInput) {
     targetType: "skill",
     targetId: created.id,
     targetLabel: `${created.slug}@${created.version}`,
-    message: `提交技能 ${created.displayName} 等待审批`,
+    message: `提交技能 ${created.displayName} 到项目 ${project.name} 等待审批`,
   });
 
-  return mapSubmission(created);
+  const mapped = mapSubmission(created);
+  const feishuNotification = await notifyFeishuForSubmission(mapped, "submitted", input.appOrigin);
+
+  return Object.assign(mapped, { feishuNotification });
 }
 
-export async function reviewSubmission(id: string, decision: ReviewDecision, notes?: string) {
+export async function updateUserRejectedSubmission(input: UpdateUserSubmissionInput) {
   await ensureStore();
+  const target = await db.submission.findUnique({ where: { id: input.submissionId } });
+
+  if (!target) {
+    throw new Error("未找到要修改的技能提交。");
+  }
+
+  if (target.status !== "rejected") {
+    throw new Error("只有已驳回的技能提交可以由提交人修改后重新送审。");
+  }
+
+  if (!isSubmissionOwner(mapSubmission(target), input.user)) {
+    throw new Error("只能修改自己提交的技能。");
+  }
+
+  const projects = await listProjectOptions();
+  const project = resolveProjectOption(input.projectId, projects);
+  const slug = normalizeSlug(input.slug);
+  const version = input.version.trim();
+  const submittedDisplayName = input.displayName.trim();
+  const normalizedArchive = await normalizeSkillArchive(input.archive);
+
+  if (!slug) {
+    throw new Error("技能标识不能为空。");
+  }
+
+  if (!submittedDisplayName) {
+    throw new Error("技能标题不能为空。");
+  }
+
+  const existing = await db.submission.findUnique({
+    where: { slug_version: { slug, version } },
+  });
+  if (existing && existing.id !== target.id) {
+    throw new Error("同一个 slug 和版本已经存在，请更换版本号后再次提交。");
+  }
+
+  const archiveMeta = await inspectSkillArchive(normalizedArchive, {
+    displayName: submittedDisplayName,
+    summary: input.summary,
+  });
+  const zipPath = await saveArchive(slug, version, target.id, normalizedArchive);
+  const updated = await db.submission.update({
+    where: { id: target.id },
+    data: {
+      slug,
+      displayName: submittedDisplayName,
+      version,
+      namespace: project.id,
+      summary: archiveMeta.summary,
+      description: archiveMeta.description,
+      changelog: input.changelog.trim() || "已根据驳回意见修改，重新提交审批。",
+      category: input.category.trim() || "通用",
+      tags: splitTags(input.tags),
+      authorName: input.authorName.trim(),
+      authorEmail: normalizeEmail(input.authorEmail, true),
+      status: "pending",
+      updatedAt: new Date(),
+      reviewedAt: null,
+      publishedAt: null,
+      reviewNotes: null,
+      featured: false,
+      zipPath,
+      readme: archiveMeta.readme,
+      fileTree: archiveMeta.fileTree as never,
+      fileCount: archiveMeta.fileCount,
+      fingerprint: archiveMeta.fingerprint,
+      frontmatter: (archiveMeta.frontmatter || {}) as never,
+    },
+  });
+
+  if (target.zipPath !== zipPath) {
+    try {
+      await rm(join(/* turbopackIgnore: true */ process.cwd(), target.zipPath), { force: true });
+    } catch {
+      // ignore archive cleanup errors
+    }
+  }
+
+  await appendLog({
+    action: "skill-submitted",
+    actorType: "user",
+    actorName: updated.authorName,
+    targetType: "skill",
+    targetId: updated.id,
+    targetLabel: `${updated.slug}@${updated.version}`,
+    message: `修改并重新提交技能 ${updated.displayName} 到项目 ${project.name} 等待审批`,
+  });
+
+  const mapped = mapSubmission(updated);
+  const feishuNotification = await notifyFeishuForSubmission(mapped, "submitted", input.appOrigin);
+
+  return Object.assign(mapped, { feishuNotification });
+}
+
+export async function reviewSubmission(
+  id: string,
+  decision: ReviewDecision,
+  notes?: string,
+  actorOrOptions: string | ReviewSubmissionOptions = "superadmin",
+) {
+  await ensureStore();
+  await listProjectOptions();
+  const actorName = typeof actorOrOptions === "string" ? actorOrOptions : actorOrOptions.actorName ?? "superadmin";
+  const appOrigin = typeof actorOrOptions === "string" ? undefined : actorOrOptions.appOrigin;
   const target = await db.submission.findUnique({ where: { id } });
 
   if (!target) {
@@ -461,6 +778,12 @@ export async function reviewSubmission(id: string, decision: ReviewDecision, not
     publishedAt: decision === "approve" ? now : null,
   };
 
+  let feishuNotification: FeishuNotificationResult = {
+    attempted: false,
+    sent: false,
+    message: "飞书通知未触发。",
+  };
+
   if (decision === "approve") {
     const featuredExists = await db.submission.count({
       where: { featured: true, id: { not: id } },
@@ -475,11 +798,11 @@ export async function reviewSubmission(id: string, decision: ReviewDecision, not
   await appendLog({
     action: decision === "approve" ? "skill-approved" : "skill-rejected",
     actorType: "admin",
-    actorName: "superadmin",
+    actorName,
     targetType: "skill",
     targetId: updated.id,
     targetLabel: `${updated.slug}@${updated.version}`,
-    message: `${decision === "approve" ? "审批发布" : "驳回退回"}技能 ${updated.displayName}`,
+    message: `${decision === "approve" ? "审批发布" : "驳回退回"}项目 ${resolveProjectName(updated.namespace)} 的技能 ${updated.displayName}`,
   });
 
   let gitLabSync: GitLabSyncResult = { attempted: false, synced: false };
@@ -492,7 +815,7 @@ export async function reviewSubmission(id: string, decision: ReviewDecision, not
         await appendGitLabSyncLog({
           action: "gitlab-sync-succeeded",
           actorType: "admin",
-          actorName: "superadmin",
+          actorName,
           targetType: "skill",
           targetId: updated.id,
           targetLabel: `${updated.slug}@${updated.version}`,
@@ -505,18 +828,23 @@ export async function reviewSubmission(id: string, decision: ReviewDecision, not
       await appendGitLabSyncLog({
         action: "gitlab-sync-failed",
         actorType: "admin",
-        actorName: "superadmin",
+        actorName,
         targetType: "skill",
         targetId: updated.id,
         targetLabel: `${updated.slug}@${updated.version}`,
         message,
       });
     }
+
+    feishuNotification = await notifyFeishuForSubmission(mapSubmission(updated), "published", appOrigin);
+  } else {
+    feishuNotification = await notifyFeishuForSubmission(mapSubmission(updated), "rejected", appOrigin);
   }
 
   return {
     submission: mapSubmission(updated),
     gitLabSync,
+    feishuNotification,
   };
 }
 
@@ -555,6 +883,47 @@ export async function deleteSubmission(id: string, actorName = "superadmin") {
   return mapSubmission(target);
 }
 
+export async function deleteUserRejectedSubmission(
+  id: string,
+  user: Pick<UserRecord, "username" | "displayName" | "email">,
+) {
+  await ensureStore();
+  const target = await db.submission.findUnique({ where: { id } });
+
+  if (!target) {
+    throw new Error("技能记录不存在。");
+  }
+
+  const mapped = mapSubmission(target);
+  if (target.status === "published") {
+    throw new Error("已发布技能不能在个人工作台直接删除，请联系管理员处理。");
+  }
+
+  if (!isSubmissionOwner(mapped, user)) {
+    throw new Error("只能删除自己提交的技能。");
+  }
+
+  await db.submission.delete({ where: { id } });
+
+  try {
+    await rm(join(/* turbopackIgnore: true */ process.cwd(), target.zipPath), { force: true });
+  } catch {
+    // ignore archive cleanup errors
+  }
+
+  await appendLog({
+    action: "skill-deleted",
+    actorType: "user",
+    actorName: user.username,
+    targetType: "skill",
+    targetId: target.id,
+    targetLabel: `${target.slug}@${target.version}`,
+    message: `提交人删除${target.status === "pending" ? "待审批" : "已驳回"}技能 ${target.displayName}`,
+  });
+
+  return mapped;
+}
+
 export async function deleteSkillGroup(
   id: string,
   options?: {
@@ -563,6 +932,7 @@ export async function deleteSkillGroup(
   },
 ) {
   await ensureStore();
+  await listProjectOptions();
   const actorName = options?.actorName ?? "superadmin";
   const target = await db.submission.findUnique({ where: { id } });
 
@@ -615,7 +985,7 @@ export async function deleteSkillGroup(
         message: "GitLab 同步配置表尚未创建，已跳过仓库删除。",
       };
     } else {
-      const config = normalizeGitLabSyncConfig(record?.value);
+      const config = getGitLabProjectConfig(record?.value, target.namespace);
 
       try {
         gitLabSync = await deleteSkillFromGitLab({
@@ -654,6 +1024,101 @@ export async function deleteSkillGroup(
     slug: target.slug,
     displayName: target.displayName,
     deletedCount: siblings.length,
+    gitLabSync,
+  };
+}
+
+export async function switchSkillProject(id: string, nextProjectId: string, actorName = "superadmin") {
+  await ensureStore();
+  const projects = await listProjectOptions();
+  const target = await db.submission.findUnique({ where: { id } });
+
+  if (!target) {
+    throw new Error("技能记录不存在。");
+  }
+
+  const nextProject = resolveProjectOption(nextProjectId, projects);
+  const currentProjectId = target.namespace || DEFAULT_PROJECT_ID;
+
+  if (currentProjectId === nextProject.id) {
+    return {
+      slug: target.slug,
+      displayName: target.displayName,
+      projectName: nextProject.name,
+      movedCount: 0,
+      gitLabSync: { attempted: false, synced: false, message: "技能已属于该项目，无需切换。" } satisfies GitLabSyncResult,
+    };
+  }
+
+  const siblings = await db.submission.findMany({ where: { slug: target.slug } });
+  const record = await readGitLabSyncSettingRecord();
+  let gitLabSync: GitLabSyncResult = { attempted: false, synced: false };
+
+  if (record !== GITLAB_SYNC_STORAGE_MISSING) {
+    const oldConfig = getGitLabProjectConfig(record?.value, currentProjectId);
+
+    try {
+      if (oldConfig.repositoryTreeUrl && oldConfig.token) {
+        await deleteSkillFromGitLab({ slug: target.slug, config: oldConfig });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "从原 GitLab 项目删除技能失败。";
+      await appendGitLabSyncLog({
+        action: "gitlab-sync-failed",
+        actorType: "admin",
+        actorName,
+        targetType: "skill",
+        targetId: target.id,
+        targetLabel: target.slug,
+        message,
+      });
+      throw new Error(message);
+    }
+  }
+
+  await db.submission.updateMany({ where: { slug: target.slug }, data: { namespace: nextProject.id, updatedAt: new Date() } });
+
+  const latestPublished = siblings
+    .filter((item) => item.status === "published")
+    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())[0];
+  if (latestPublished) {
+    try {
+      gitLabSync = await synchronizeApprovedSubmissionToGitLab({
+        ...mapSubmission({ ...latestPublished, namespace: nextProject.id }),
+        projectId: nextProject.id,
+        projectName: nextProject.name,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "同步到新 GitLab 项目失败。";
+      gitLabSync = { attempted: true, synced: false, message };
+      await appendGitLabSyncLog({
+        action: "gitlab-sync-failed",
+        actorType: "admin",
+        actorName,
+        targetType: "skill",
+        targetId: latestPublished.id,
+        targetLabel: `${latestPublished.slug}@${latestPublished.version}`,
+        message,
+      });
+      throw new Error(message);
+    }
+  }
+
+  await appendLog({
+    action: "skill-submitted",
+    actorType: "admin",
+    actorName,
+    targetType: "skill",
+    targetId: target.id,
+    targetLabel: target.slug,
+    message: `切换技能 ${target.displayName} 所属项目：${resolveProjectName(currentProjectId)} → ${nextProject.name}`,
+  });
+
+  return {
+    slug: target.slug,
+    displayName: target.displayName,
+    projectName: nextProject.name,
+    movedCount: siblings.length,
     gitLabSync,
   };
 }
@@ -768,9 +1233,27 @@ export async function setSkillRating(slug: string, userId: string, rating: numbe
 
 export async function getUserDashboard(userId: string): Promise<UserDashboardData> {
   await ensureStore();
-  const [favorites, ratings]: [DbFavorite[], DbRating[]] = await Promise.all([
+  await listProjectOptions();
+  const user = await db.user.findUnique({ where: { id: userId } });
+  if (!user) {
+    throw new Error("用户不存在。");
+  }
+
+  const reviewProjectIds = await getProjectAdminScope(userId);
+
+  const [favorites, ratings, authoredSubmissions, reviewSubmissions]: [DbFavorite[], DbRating[], DbSubmission[], DbSubmission[]] = await Promise.all([
     db.favorite.findMany({ where: { userId } }),
     db.rating.findMany({ where: { userId } }),
+    db.submission.findMany({
+      where: buildUserSubmissionOwnerWhere(mapUser(user)),
+      orderBy: { updatedAt: "desc" },
+    }),
+    reviewProjectIds.length
+      ? db.submission.findMany({
+          where: { status: "pending", namespace: { in: reviewProjectIds } },
+          orderBy: { updatedAt: "asc" },
+        })
+      : Promise.resolve([]),
   ]);
 
   const slugSet = new Set<string>([
@@ -794,6 +1277,8 @@ export async function getUserDashboard(userId: string): Promise<UserDashboardDat
   const submissionsById = new Map(submissions.map((item) => [item.id, item]));
 
   return {
+    submissions: mapSubmissions(authoredSubmissions),
+    reviewSubmissions: mapSubmissions(reviewSubmissions),
     favorites: favorites
       .map((item: DbFavorite) => submissionsById.get(latestBySlug.get(item.slug) ?? ""))
       .filter(Boolean) as SubmissionRecord[],
@@ -807,10 +1292,14 @@ export async function getUserDashboard(userId: string): Promise<UserDashboardDat
   };
 }
 
-export async function getLeaderboardData(limit = 5): Promise<LeaderboardData> {
+export async function getLeaderboardData(limit = 5, projectId?: string): Promise<LeaderboardData> {
   await ensureStore();
+  await listProjectOptions();
   const [submissions, favorites, ratings] = await Promise.all([
-    db.submission.findMany({ where: { status: "published" }, orderBy: { updatedAt: "desc" } }),
+    db.submission.findMany({
+      where: { status: "published", ...buildSubmissionProjectWhere(projectId) },
+      orderBy: { updatedAt: "desc" },
+    }),
     db.favorite.findMany(),
     db.rating.findMany(),
   ]);
@@ -880,38 +1369,119 @@ export async function getGitLabSyncConfigSummary(): Promise<GitLabSyncConfigSumm
     });
   }
 
-  const config = normalizeGitLabSyncConfig(record?.value);
-  const availableBranches = await loadAvailableBranches(config);
+  const projects = normalizeGitLabSyncProjects(record?.value);
+  refreshProjectNameCache(projects);
+  const primary = projects[0] ?? buildDefaultGitLabProject();
+  const availableBranches = await loadAvailableBranches(primary);
 
   try {
-    return buildGitLabSyncSummary(config, record?.updatedAt.toISOString(), {
+    return buildGitLabSyncSummary(primary, record?.updatedAt.toISOString(), {
       storageReady: true,
       availableBranches,
+      projects: projects.map((project) => buildGitLabSyncSummary(project, record?.updatedAt.toISOString(), {
+        storageReady: true,
+      })),
     });
   } catch {
-    return buildGitLabSyncSummary(config, record?.updatedAt.toISOString(), {
+    return buildGitLabSyncSummary(primary, record?.updatedAt.toISOString(), {
       storageReady: true,
       availableBranches,
-      issue: config.repositoryTreeUrl ? "当前地址暂时无法解析，请检查 GitLab 目录页格式。" : undefined,
+      projects: projects.map((project) => buildGitLabSyncSummary(project, record?.updatedAt.toISOString(), {
+        storageReady: true,
+      })),
+      issue: primary.repositoryTreeUrl ? "当前地址暂时无法解析，请检查 GitLab 目录页格式。" : undefined,
     });
   }
 }
 
+export async function getFeishuNotificationSummary(): Promise<FeishuNotificationSummary> {
+  await ensureStore();
+  const record = await readAppSettingRecord(FEISHU_NOTIFICATION_SETTING_KEY);
+
+  if (record === GITLAB_SYNC_STORAGE_MISSING) {
+    return {
+      enabled: false,
+      appId: "",
+      hasAppSecret: false,
+      chatId: "",
+      storageReady: false,
+      issue: "当前数据库尚未创建配置表，请先执行数据库迁移。",
+    };
+  }
+
+  const config = normalizeFeishuNotificationConfig(record?.value);
+  return buildFeishuNotificationSummary(config, record?.updatedAt.toISOString());
+}
+
+export async function updateFeishuNotificationConfig(input: {
+  enabled: boolean;
+  appId: string;
+  appSecret?: string;
+  clearSecret?: boolean;
+  chatId: string;
+}) {
+  await ensureStore();
+  const existingRecord = await readAppSettingRecordOrThrow(FEISHU_NOTIFICATION_SETTING_KEY);
+  const existing = normalizeFeishuNotificationConfig(existingRecord?.value);
+  const appId = input.appId.trim();
+  const appSecret = input.clearSecret ? "" : input.appSecret?.trim() || existing.appSecret;
+  const chatId = input.chatId.trim();
+
+  if (input.enabled && (!appId || !appSecret)) {
+    throw new Error("启用飞书通知前请填写 App ID 和 App Secret。");
+  }
+
+  await db.appSetting.upsert({
+    where: { key: FEISHU_NOTIFICATION_SETTING_KEY },
+    update: {
+      value: { enabled: input.enabled, appId, appSecret, chatId } as never,
+      updatedAt: new Date(),
+    },
+    create: {
+      key: FEISHU_NOTIFICATION_SETTING_KEY,
+      value: { enabled: input.enabled, appId, appSecret, chatId } as never,
+      updatedAt: new Date(),
+    },
+  });
+
+  return getFeishuNotificationSummary();
+}
+
 export async function updateGitLabSyncConfig(input: {
+  projectId?: string;
+  projectName?: string;
   enabled: boolean;
   repositoryTreeUrl: string;
   branch?: string;
   token?: string;
   clearToken?: boolean;
+  adminUserIds?: string[];
+  notifyEmails?: string[];
 }) {
   await ensureStore();
   const existingRecord = await readGitLabSyncSettingRecordOrThrow();
-  const existing = normalizeGitLabSyncConfig(existingRecord?.value);
+  const projects = normalizeGitLabSyncProjects(existingRecord?.value);
+  const rawProjectId = input.projectId?.trim() ?? "";
+  const isNewProject = rawProjectId.startsWith("new-project");
+
+  if (isNewProject && !input.projectName?.trim()) {
+    throw new Error("新增同步项目时请填写项目名称。");
+  }
+
+  const projectId = isNewProject
+    ? createUniqueProjectId(input.projectName ?? "", projects)
+    : normalizeProjectId(input.projectId || input.projectName || DEFAULT_PROJECT_ID);
+  const matchedProject = projects.find((project) => project.id === projectId);
+
+  const existing = matchedProject ?? buildDefaultGitLabProject({ id: projectId });
 
   const repositoryTreeUrl = input.repositoryTreeUrl.trim();
   const branch = input.branch?.trim() || parseSelectedBranchFromUrl(repositoryTreeUrl) || existing.branch;
   const token = input.clearToken ? "" : input.token?.trim() || existing.token;
   const enabled = input.enabled;
+  const projectName = input.projectName?.trim() || existing.name || projectId;
+  const adminUserIds = input.adminUserIds ?? existing.adminUserIds;
+  const notifyEmails = normalizeFeishuReceiverValues(input.notifyEmails ?? existing.notifyEmails);
 
   if (repositoryTreeUrl) {
     const parsed = parseGitLabTreeUrl(repositoryTreeUrl);
@@ -933,24 +1503,30 @@ export async function updateGitLabSyncConfig(input: {
     throw new Error("启用 GitLab 同步前请先填写授权码。若已保存过授权码，可留空以继续沿用。");
   }
 
+  const nextProject: GitLabSyncProject = {
+    id: projectId,
+    name: projectName,
+    enabled,
+    repositoryTreeUrl,
+    branch,
+    token,
+    adminUserIds: [...new Set(adminUserIds.filter(Boolean))],
+    notifyEmails,
+  };
+  const nextProjects = upsertGitLabProject(projects, nextProject);
+
   await db.appSetting.upsert({
     where: { key: GITLAB_SYNC_SETTING_KEY },
     update: {
       value: {
-        enabled,
-        repositoryTreeUrl,
-        branch,
-        token,
+        projects: nextProjects,
       } as never,
       updatedAt: new Date(),
     },
     create: {
       key: GITLAB_SYNC_SETTING_KEY,
       value: {
-        enabled,
-        repositoryTreeUrl,
-        branch,
-        token,
+        projects: nextProjects,
       } as never,
       updatedAt: new Date(),
     },
@@ -959,7 +1535,35 @@ export async function updateGitLabSyncConfig(input: {
   return getGitLabSyncConfigSummary();
 }
 
+export async function deleteGitLabSyncProject(projectId: string) {
+  await ensureStore();
+  const existingRecord = await readGitLabSyncSettingRecordOrThrow();
+  const projects = normalizeGitLabSyncProjects(existingRecord?.value);
+  const normalizedProjectId = normalizeProjectId(projectId || DEFAULT_PROJECT_ID);
+
+  if (projects.length <= 1) {
+    throw new Error("至少需要保留一个同步项目。");
+  }
+
+  const nextProjects = projects.filter((project) => project.id !== normalizedProjectId);
+  if (nextProjects.length === projects.length) {
+    throw new Error("未找到要删除的同步项目。");
+  }
+
+  await db.appSetting.update({
+    where: { key: GITLAB_SYNC_SETTING_KEY },
+    data: {
+      value: { projects: nextProjects } as never,
+      updatedAt: new Date(),
+    },
+  });
+
+  refreshProjectNameCache(nextProjects);
+  return getGitLabSyncConfigSummary();
+}
+
 export async function testGitLabSyncConnection(input: {
+  projectId?: string;
   repositoryTreeUrl: string;
   branch?: string;
   token?: string;
@@ -969,7 +1573,7 @@ export async function testGitLabSyncConnection(input: {
   const existingRecord = await readGitLabSyncSettingRecord();
   const existing =
     existingRecord && existingRecord !== GITLAB_SYNC_STORAGE_MISSING
-      ? normalizeGitLabSyncConfig(existingRecord.value)
+      ? getGitLabProjectConfig(existingRecord.value, input.projectId)
       : undefined;
   const repositoryTreeUrl = input.repositoryTreeUrl.trim() || existing?.repositoryTreeUrl || "";
   const branch = input.branch?.trim() || existing?.branch || parseSelectedBranchFromUrl(repositoryTreeUrl);
@@ -983,6 +1587,7 @@ export async function testGitLabSyncConnection(input: {
 }
 
 export async function getGitLabBranches(input: {
+  projectId?: string;
   repositoryTreeUrl: string;
   token?: string;
 }): Promise<GitLabBranchOption[]> {
@@ -991,13 +1596,71 @@ export async function getGitLabBranches(input: {
   const existingRecord = await readGitLabSyncSettingRecord();
   const existing =
     existingRecord && existingRecord !== GITLAB_SYNC_STORAGE_MISSING
-      ? normalizeGitLabSyncConfig(existingRecord.value)
+      ? getGitLabProjectConfig(existingRecord.value, input.projectId)
       : undefined;
 
   const repositoryTreeUrl = input.repositoryTreeUrl.trim() || existing?.repositoryTreeUrl || "";
   const token = input.token?.trim() || existing?.token || "";
 
   return listGitLabBranches({ repositoryTreeUrl, token });
+}
+
+export async function listProjectOptions(): Promise<ProjectOption[]> {
+  await ensureStore();
+  const record = await readGitLabSyncSettingRecord();
+  const projects = record === GITLAB_SYNC_STORAGE_MISSING
+    ? [buildDefaultGitLabProject()]
+    : normalizeGitLabSyncProjects(record?.value);
+  refreshProjectNameCache(projects);
+
+  return projects.map((project) => {
+    try {
+      const parsed = project.repositoryTreeUrl
+        ? applySelectedBranch(parseGitLabTreeUrl(project.repositoryTreeUrl), project.branch)
+        : undefined;
+      return {
+        id: project.id,
+        name: project.name,
+        enabled: project.enabled,
+        projectPath: parsed?.projectPath,
+        branch: parsed?.branch || project.branch,
+        basePath: parsed?.basePath,
+      };
+    } catch {
+      return {
+        id: project.id,
+        name: project.name,
+        enabled: project.enabled,
+        branch: project.branch,
+      };
+    }
+  });
+}
+
+export async function getProjectAdminScope(userId?: string | null) {
+  if (!userId) {
+    return [] as string[];
+  }
+
+  await ensureStore();
+  const record = await readGitLabSyncSettingRecord();
+  const projects = record === GITLAB_SYNC_STORAGE_MISSING
+    ? [buildDefaultGitLabProject()]
+    : normalizeGitLabSyncProjects(record?.value);
+  refreshProjectNameCache(projects);
+
+  return projects
+    .filter((project) => project.adminUserIds.includes(userId))
+    .map((project) => project.id);
+}
+
+export async function canManageSubmissionProject(submissionId: string, projectIds: string[]) {
+  if (!projectIds.length) {
+    return false;
+  }
+
+  const submission = await db.submission.findUnique({ where: { id: submissionId } });
+  return Boolean(submission && projectIds.includes(submission.namespace || DEFAULT_PROJECT_ID));
 }
 
 function applyCatalogQuery(items: CatalogItem[], query?: string) {
@@ -1055,6 +1718,8 @@ function getLatestPublishedBySlug(submissions: SubmissionRecord[]): CatalogItem[
     stars: entry.stars,
     featured: entry.featured,
     fileCount: entry.fileCount,
+    projectId: entry.projectId,
+    projectName: entry.projectName,
   }));
 }
 
@@ -1085,6 +1750,498 @@ function normalizeGitLabSyncConfig(value: unknown): GitLabSyncConfig {
   };
 }
 
+function normalizeGitLabSyncProjects(value: unknown): GitLabSyncProject[] {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const rawProjects = (value as { projects?: unknown }).projects;
+    if (Array.isArray(rawProjects)) {
+      const projects = rawProjects.map((item, index) => normalizeGitLabSyncProject(item, index));
+      return projects.length ? projects : [buildDefaultGitLabProject()];
+    }
+  }
+
+  const legacy = normalizeGitLabSyncConfig(value);
+  return [
+    buildDefaultGitLabProject({
+      enabled: legacy.enabled,
+      repositoryTreeUrl: legacy.repositoryTreeUrl,
+      branch: legacy.branch,
+      token: legacy.token,
+      adminUserIds: legacy.adminUserIds ?? [],
+    }),
+  ];
+}
+
+function normalizeGitLabSyncProject(value: unknown, index = 0): GitLabSyncProject {
+  const config = normalizeGitLabSyncConfig(value);
+  const raw = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const rawName = typeof raw.name === "string" ? raw.name.trim() : "";
+  const id = normalizeProjectId(typeof raw.id === "string" ? raw.id : rawName || `${DEFAULT_PROJECT_ID}-${index + 1}`);
+  const adminUserIds = Array.isArray(raw.adminUserIds)
+    ? raw.adminUserIds.filter((item): item is string => typeof item === "string" && Boolean(item.trim()))
+    : [];
+  const notifyEmails = Array.isArray(raw.notifyEmails)
+    ? normalizeFeishuReceiverValues(raw.notifyEmails.filter((item): item is string => typeof item === "string"))
+    : [];
+
+  return {
+    id,
+    name: rawName || (id === DEFAULT_PROJECT_ID ? DEFAULT_PROJECT_NAME : id),
+    enabled: config.enabled,
+    repositoryTreeUrl: config.repositoryTreeUrl,
+    branch: config.branch,
+    token: config.token,
+    adminUserIds: [...new Set(adminUserIds)],
+    notifyEmails,
+  };
+}
+
+function buildDefaultGitLabProject(overrides?: Partial<GitLabSyncProject>): GitLabSyncProject {
+  return {
+    id: DEFAULT_PROJECT_ID,
+    name: DEFAULT_PROJECT_NAME,
+    enabled: false,
+    repositoryTreeUrl: "",
+    branch: "",
+    token: "",
+    adminUserIds: [],
+    notifyEmails: [],
+    ...overrides,
+  };
+}
+
+function upsertGitLabProject(projects: GitLabSyncProject[], nextProject: GitLabSyncProject) {
+  const existing = projects.filter((project) => project.id !== nextProject.id);
+  const ordered = nextProject.id === DEFAULT_PROJECT_ID
+    ? [nextProject, ...existing]
+    : [...existing, nextProject];
+  refreshProjectNameCache(ordered);
+  return ordered;
+}
+
+function getGitLabProjectConfig(value: unknown, projectId?: string): GitLabSyncProject {
+  const projects = normalizeGitLabSyncProjects(value);
+  refreshProjectNameCache(projects);
+  const normalizedProjectId = normalizeProjectId(projectId || DEFAULT_PROJECT_ID);
+  return projects.find((project) => project.id === normalizedProjectId) ?? projects[0] ?? buildDefaultGitLabProject();
+}
+
+function normalizeProjectId(value: string) {
+  const normalized = normalizeSlug(value || DEFAULT_PROJECT_ID);
+  if (normalized) {
+    return normalized;
+  }
+
+  return `project-${hashProjectName(value || DEFAULT_PROJECT_ID)}`;
+}
+
+function normalizeFeishuNotificationConfig(value: unknown): FeishuNotificationConfig {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { enabled: false, appId: "", appSecret: "", chatId: "" };
+  }
+
+  const raw = value as Record<string, unknown>;
+  return {
+    enabled: Boolean(raw.enabled),
+    appId: typeof raw.appId === "string" ? raw.appId.trim() : "",
+    appSecret: typeof raw.appSecret === "string" ? raw.appSecret.trim() : "",
+    chatId: typeof raw.chatId === "string" ? raw.chatId.trim() : "",
+  };
+}
+
+function buildFeishuNotificationSummary(config: FeishuNotificationConfig, updatedAt?: string): FeishuNotificationSummary {
+  return {
+    enabled: config.enabled,
+    appId: config.appId,
+    hasAppSecret: Boolean(config.appSecret),
+    maskedAppSecret: maskToken(config.appSecret),
+    chatId: config.chatId,
+    updatedAt,
+    storageReady: true,
+  };
+}
+
+function normalizeFeishuReceiverValues(values?: string[]) {
+  return [...new Set((values ?? [])
+    .filter((value): value is string => typeof value === "string")
+    .flatMap((value) => value.split(/[，,\s]+/))
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .filter((value) => Boolean(parseFeishuReceiver(value)))
+    .map((value) => value.toLowerCase().startsWith("email:") ? value.toLowerCase() : value))];
+}
+
+function parseFeishuReceiver(value: string): FeishuReceiver | null {
+  const raw = value.trim();
+  if (!raw) {
+    return null;
+  }
+
+  const prefixed = raw.match(/^(open_id|union_id|user_id|email|chat_id)[:：](.+)$/i);
+  if (prefixed) {
+    const receiveIdType = prefixed[1].toLowerCase() as FeishuReceiveIdType;
+    const receiveId = prefixed[2].trim();
+    if (!receiveId) {
+      return null;
+    }
+
+    if (receiveIdType === "email" && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(receiveId)) {
+      return null;
+    }
+
+    return { receiveIdType, receiveId, label: `${receiveIdType}:${receiveId}` };
+  }
+
+  if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(raw)) {
+    return { receiveIdType: "email", receiveId: raw.toLowerCase(), label: raw.toLowerCase() };
+  }
+
+  if (raw.startsWith("ou_")) {
+    return { receiveIdType: "open_id", receiveId: raw, label: `open_id:${raw}` };
+  }
+
+  if (raw.startsWith("on_")) {
+    return { receiveIdType: "union_id", receiveId: raw, label: `union_id:${raw}` };
+  }
+
+  if (raw.startsWith("oc_")) {
+    return { receiveIdType: "chat_id", receiveId: raw, label: `chat_id:${raw}` };
+  }
+
+  return null;
+}
+
+function buildFeishuReceivers(values: string[]) {
+  const receivers = values
+    .map(parseFeishuReceiver)
+    .filter((item): item is FeishuReceiver => Boolean(item));
+  const deduped = new Map<string, FeishuReceiver>();
+  for (const receiver of receivers) {
+    deduped.set(`${receiver.receiveIdType}:${receiver.receiveId}`, receiver);
+  }
+
+  return [...deduped.values()];
+}
+
+function buildUserSubmissionOwnerWhere(user: Pick<UserRecord, "username" | "displayName" | "email">) {
+  const candidates = [
+    user.email ? { authorEmail: user.email.trim().toLowerCase() } : undefined,
+    user.displayName ? { authorName: user.displayName.trim() } : undefined,
+    user.username ? { authorName: user.username.trim() } : undefined,
+  ].filter((item): item is { authorEmail: string } | { authorName: string } => Boolean(item));
+
+  return candidates.length ? { OR: candidates } : { authorEmail: "__no_user_email__" };
+}
+
+function isSubmissionOwner(
+  submission: SubmissionRecord,
+  user: Pick<UserRecord, "username" | "displayName" | "email">,
+) {
+  const email = user.email.trim().toLowerCase();
+  if (email && submission.authorEmail.trim().toLowerCase() === email) {
+    return true;
+  }
+
+  const names = new Set([user.displayName.trim(), user.username.trim()].filter(Boolean));
+  return names.has(submission.authorName.trim());
+}
+
+function normalizeEmail(value: string | undefined, required: boolean) {
+  const email = value?.trim().toLowerCase() ?? "";
+  if (!email) {
+    if (required) {
+      throw new Error("邮箱不能为空。");
+    }
+    return "";
+  }
+
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+    throw new Error("邮箱格式不正确。");
+  }
+
+  return email;
+}
+
+async function notifyFeishuForSubmission(
+  submission: SubmissionRecord,
+  event: "submitted" | "published" | "rejected",
+  appOrigin?: string,
+): Promise<FeishuNotificationResult> {
+  try {
+    const record = await readAppSettingRecord(FEISHU_NOTIFICATION_SETTING_KEY);
+    if (record === GITLAB_SYNC_STORAGE_MISSING) {
+      return { attempted: false, sent: false, message: "飞书配置表不存在，已跳过通知。" };
+    }
+
+    const config = normalizeFeishuNotificationConfig(record?.value);
+    if (!config.enabled || !config.appId || !config.appSecret) {
+      return { attempted: false, sent: false, message: "飞书通知未启用或 App 信息不完整，已跳过通知。" };
+    }
+
+    const gitLabRecord = await readGitLabSyncSettingRecord();
+    const project = gitLabRecord === GITLAB_SYNC_STORAGE_MISSING
+      ? buildDefaultGitLabProject()
+      : getGitLabProjectConfig(gitLabRecord?.value, submission.projectId);
+    const users = await db.user.findMany({ where: { id: { in: project.adminUserIds.filter((id) => id !== SUPER_ADMIN_PROJECT_ADMIN_ID) } } });
+    const adminProfile = project.adminUserIds.includes(SUPER_ADMIN_PROJECT_ADMIN_ID) ? await getAdminProfile() : null;
+    const projectApprovers = buildFeishuReceivers([
+      ...project.notifyEmails,
+      adminProfile?.email ?? "",
+      ...users.map((user) => (user as DbUser).email),
+    ]);
+    const publisherReceivers = buildFeishuReceivers([submission.authorEmail]);
+    const card = buildFeishuSubmissionCard(submission, event, appOrigin);
+
+    const targets = event === "submitted" ? projectApprovers : publisherReceivers;
+
+    if (!targets.length) {
+      return {
+        attempted: false,
+        sent: false,
+        message: event === "submitted"
+          ? "飞书已启用，但该项目未配置审批人飞书接收人，未发送。请在项目配置中填写审批人的邮箱、open_id、user_id 或 union_id。"
+          : "飞书已启用，但发布人没有有效的飞书接收人，未发送。请给发布人配置真实企业邮箱。",
+      };
+    }
+
+    const results = await Promise.allSettled(
+      targets.map((target) => sendFeishuCardMessage({ config, receiveIdType: target.receiveIdType, receiveId: target.receiveId, card })),
+    );
+    const failed = results
+      .map((result, index) => ({ result, target: targets[index] }))
+      .filter((item): item is { result: PromiseRejectedResult; target: (typeof targets)[number] } => item.result.status === "rejected");
+    const successCount = results.length - failed.length;
+
+    if (!successCount) {
+      return {
+        attempted: true,
+        sent: false,
+        message: `飞书发送失败：${failed.map((item) => `${item.target.label} ${item.result.reason instanceof Error ? item.result.reason.message : "发送失败"}`).join("；")}`,
+      };
+    }
+
+    if (failed.length) {
+      return {
+        attempted: true,
+        sent: true,
+        message: `飞书部分发送成功：成功 ${successCount}/${results.length}；失败 ${failed.map((item) => item.target.label).join("、")}`,
+      };
+    }
+
+    return { attempted: true, sent: true, message: `飞书发送成功：${successCount}/${results.length}。` };
+  } catch (error) {
+    console.error("Feishu notification skipped.", error);
+    return {
+      attempted: true,
+      sent: false,
+      message: error instanceof Error ? `飞书发送失败：${error.message}` : "飞书发送失败。",
+    };
+  }
+}
+
+function buildFeishuSubmissionCard(
+  submission: SubmissionRecord,
+  event: "submitted" | "published" | "rejected",
+  appOrigin?: string,
+) {
+  const origin = normalizeAppOrigin(appOrigin);
+  const actionUrl = buildFeishuActionUrl(origin, submission, event);
+  const meta = getFeishuEventMeta(event);
+  const markdownLines = [
+    `**技能：** ${escapeFeishuMarkdown(submission.displayName)}  \`${escapeFeishuMarkdown(submission.version)}\``,
+    `**项目：** ${escapeFeishuMarkdown(submission.projectName)}`,
+    `**Slug：** \`${escapeFeishuMarkdown(submission.slug)}\``,
+    `**提交人：** ${escapeFeishuMarkdown(submission.authorName)}${submission.authorEmail ? `（${escapeFeishuMarkdown(submission.authorEmail)}）` : ""}`,
+  ];
+
+  if (event === "rejected") {
+    markdownLines.push(`**审批意见：** ${escapeFeishuMarkdown(submission.reviewNotes || "未填写")}`);
+  }
+
+  return {
+    schema: "2.0",
+    config: {
+      update_multi: true,
+      width_mode: "fill",
+      enable_forward: true,
+      summary: { content: meta.summary },
+    },
+    card_link: { url: actionUrl, pc_url: actionUrl, ios_url: actionUrl, android_url: actionUrl },
+    header: {
+      title: { tag: "plain_text", content: meta.title },
+      subtitle: { tag: "plain_text", content: "Apex Skills Hub" },
+      template: meta.template,
+      padding: "12px 12px 12px 12px",
+    },
+    body: {
+      direction: "vertical",
+      padding: "12px 12px 12px 12px",
+      vertical_spacing: "8px",
+      elements: [
+        {
+          tag: "markdown",
+          content: markdownLines.join("\n"),
+          text_align: "left",
+          text_size: "normal_v2",
+        },
+        {
+          tag: "markdown",
+          content: escapeFeishuMarkdown(meta.description),
+          text_align: "left",
+          text_size: "normal_v2",
+        },
+        {
+          tag: "button",
+          text: { tag: "plain_text", content: meta.buttonText },
+          type: meta.buttonType,
+          width: "default",
+          size: "medium",
+          behaviors: [
+            {
+              type: "open_url",
+              default_url: actionUrl,
+              pc_url: actionUrl,
+              ios_url: actionUrl,
+              android_url: actionUrl,
+            },
+          ],
+        },
+      ],
+    },
+  };
+}
+
+function getFeishuEventMeta(event: "submitted" | "published" | "rejected") {
+  if (event === "submitted") {
+    return {
+      title: "🧩 新技能待审批",
+      summary: "Apex Skills Hub 有新的技能提交待审批",
+      description: "请项目审批人打开审批台完成发布或驳回。",
+      buttonText: "打开审批台",
+      buttonType: "primary",
+      template: "blue",
+    };
+  }
+
+  if (event === "published") {
+    return {
+      title: "✅ 技能已发布",
+      summary: "Apex Skills Hub 技能审批通过并已发布",
+      description: "你的技能已通过审批，可以打开详情页查看发布效果。",
+      buttonText: "查看技能详情",
+      buttonType: "primary",
+      template: "green",
+    };
+  }
+
+  return {
+    title: "↩️ 技能已驳回",
+    summary: "Apex Skills Hub 技能提交已被驳回",
+    description: "请根据审批意见修改后，在我的技能中重新提交。",
+    buttonText: "修改并重新提交",
+    buttonType: "danger",
+    template: "red",
+  };
+}
+
+function buildFeishuActionUrl(
+  origin: string,
+  submission: SubmissionRecord,
+  event: "submitted" | "published" | "rejected",
+) {
+  if (event === "submitted") {
+    return `${origin}/admin?tab=pending`;
+  }
+
+  if (event === "published") {
+    return `${origin}/skills/${encodeURIComponent(submission.slug)}`;
+  }
+
+  return `${origin}/my-skills?status=rejected&page=1`;
+}
+
+function normalizeAppOrigin(appOrigin?: string) {
+  const normalized = appOrigin?.trim().replace(/\/+$/, "");
+  if (normalized) {
+    return normalized;
+  }
+
+  return getOriginFromHeaders(new Headers(), { preferNetworkIp: true }).replace(/\/+$/, "");
+}
+
+function escapeFeishuMarkdown(value: string) {
+  return value.replace(/`/g, "ʼ");
+}
+
+function createUniqueProjectId(projectName: string, projects: GitLabSyncProject[]) {
+  const normalizedName = projectName.trim();
+  const nameExists = projects.some((project) => project.name.trim().toLowerCase() === normalizedName.toLowerCase());
+  if (nameExists) {
+    throw new Error(`项目“${normalizedName}”已存在，请更换名称后再新增。`);
+  }
+
+  const baseId = normalizeProjectId(normalizedName);
+  const usedIds = new Set(projects.map((project) => project.id));
+  if (!usedIds.has(baseId)) {
+    return baseId;
+  }
+
+  for (let index = 2; index < 1000; index += 1) {
+    const candidate = `${baseId}-${index}`;
+    if (!usedIds.has(candidate)) {
+      return candidate;
+    }
+  }
+
+  return `${baseId}-${Date.now().toString(36)}`;
+}
+
+function hashProjectName(value: string) {
+  let hash = 0;
+  for (const char of value.trim() || DEFAULT_PROJECT_ID) {
+    hash = ((hash << 5) - hash + char.codePointAt(0)!) | 0;
+  }
+
+  return Math.abs(hash).toString(36);
+}
+
+function refreshProjectNameCache(projects: Array<Pick<GitLabSyncProject, "id" | "name">>) {
+  projectNameCache = new Map([[DEFAULT_PROJECT_ID, DEFAULT_PROJECT_NAME]]);
+  for (const project of projects) {
+    projectNameCache.set(project.id, project.name);
+  }
+}
+
+function resolveProjectName(projectId?: string | null) {
+  const id = projectId || DEFAULT_PROJECT_ID;
+  return projectNameCache.get(id) ?? id;
+}
+
+function resolveProjectOption(projectId: string | undefined, projects: ProjectOption[]) {
+  const normalized = normalizeProjectId(projectId || DEFAULT_PROJECT_ID);
+  return projects.find((project) => project.id === normalized) ?? projects[0] ?? {
+    id: DEFAULT_PROJECT_ID,
+    name: DEFAULT_PROJECT_NAME,
+    enabled: false,
+  };
+}
+
+function buildSubmissionProjectWhere(projectId?: string) {
+  if (!projectId?.trim()) {
+    return {};
+  }
+
+  return { namespace: normalizeProjectId(projectId) };
+}
+
+function buildSubmissionScopeWhere(projectIds?: string[]) {
+  const normalized = [...new Set((projectIds ?? []).map(normalizeProjectId).filter(Boolean))];
+  if (!normalized.length) {
+    return {};
+  }
+
+  return { namespace: { in: normalized } };
+}
+
 async function synchronizeApprovedSubmissionToGitLab(
   submission: SubmissionRecord,
 ): Promise<GitLabSyncResult> {
@@ -1097,10 +2254,10 @@ async function synchronizeApprovedSubmissionToGitLab(
     };
   }
 
-  const config = normalizeGitLabSyncConfig(record?.value);
+  const config = getGitLabProjectConfig(record?.value, submission.projectId);
 
   if (!config.enabled || !config.repositoryTreeUrl || !config.token) {
-    return { attempted: false, synced: false, message: "未配置 GitLab 同步。" };
+    return { attempted: false, synced: false, message: `项目 ${submission.projectName} 未配置 GitLab 同步。` };
   }
 
   const archive = await readArchive(submission);
@@ -1125,6 +2282,7 @@ function buildGitLabSyncSummary(
     storageReady?: boolean;
     issue?: string;
     availableBranches?: GitLabBranchOption[];
+    projects?: GitLabSyncConfigSummary[];
   },
 ): GitLabSyncConfigSummary {
   const normalized = config ?? {
@@ -1135,15 +2293,20 @@ function buildGitLabSyncSummary(
   };
 
   const summary: GitLabSyncConfigSummary = {
+    id: normalized.id ?? DEFAULT_PROJECT_ID,
+    name: normalized.name ?? DEFAULT_PROJECT_NAME,
     enabled: normalized.enabled,
     repositoryTreeUrl: normalized.repositoryTreeUrl,
     branch: normalized.branch,
     hasToken: Boolean(normalized.token),
     maskedToken: maskToken(normalized.token),
+    adminUserIds: normalized.adminUserIds ?? [],
+    notifyEmails: normalized.notifyEmails ?? [],
     updatedAt,
     storageReady: extras?.storageReady ?? true,
     issue: extras?.issue,
     availableBranches: extras?.availableBranches,
+    projects: extras?.projects,
   };
 
   if (!normalized.repositoryTreeUrl) {
@@ -1221,8 +2384,16 @@ function maskToken(token?: string) {
 }
 
 async function readGitLabSyncSettingRecord() {
+  return readAppSettingRecord(GITLAB_SYNC_SETTING_KEY);
+}
+
+async function readGitLabSyncSettingRecordOrThrow() {
+  return readAppSettingRecordOrThrow(GITLAB_SYNC_SETTING_KEY);
+}
+
+async function readAppSettingRecord(key: string) {
   try {
-    return await db.appSetting.findUnique({ where: { key: GITLAB_SYNC_SETTING_KEY } });
+    return await db.appSetting.findUnique({ where: { key } });
   } catch (error) {
     if (isGitLabSettingsTableMissing(error)) {
       return GITLAB_SYNC_STORAGE_MISSING;
@@ -1231,9 +2402,9 @@ async function readGitLabSyncSettingRecord() {
   }
 }
 
-async function readGitLabSyncSettingRecordOrThrow() {
+async function readAppSettingRecordOrThrow(key: string) {
   try {
-    return await db.appSetting.findUnique({ where: { key: GITLAB_SYNC_SETTING_KEY } });
+    return await db.appSetting.findUnique({ where: { key } });
   } catch (error) {
     if (isGitLabSettingsTableMissing(error)) {
       throw new Error(
@@ -1334,9 +2505,12 @@ async function importLegacyStore(store: HubStore) {
       data: store.users.map((item) => ({
         id: item.id,
         username: item.username,
+        email: item.email || "",
         displayName: item.displayName,
         passwordHash: item.passwordHash,
         role: item.role,
+        roleLabel: item.roleLabel || "成员",
+        organization: item.organization || "",
         createdAt: new Date(item.createdAt),
         createdBy: item.createdBy ?? null,
         disabled: Boolean(item.disabled),
@@ -1548,7 +2722,9 @@ async function createSeedRecord(seed: SeedSpec): Promise<SubmissionRecord> {
     slug: seed.slug,
     displayName: seed.displayName,
     version: seed.version,
-    namespace: "global",
+    namespace: DEFAULT_PROJECT_ID,
+    projectId: DEFAULT_PROJECT_ID,
+    projectName: DEFAULT_PROJECT_NAME,
     summary: seed.summary,
     description: archiveMeta.description,
     changelog: seed.changelog,
@@ -1585,9 +2761,14 @@ async function saveArchive(slug: string, version: string, id: string, archive: B
 }
 
 function normalizeStore(raw: Partial<HubStore> & { submissions?: SubmissionRecord[] }) {
-  const submissions = (raw.submissions ?? []).filter(
-    (item) => !REMOVED_TEST_SUBMISSION_IDS.has(item.id),
-  );
+  const submissions = (raw.submissions ?? [])
+    .filter((item) => !REMOVED_TEST_SUBMISSION_IDS.has(item.id))
+    .map((item) => ({
+      ...item,
+      namespace: item.namespace || DEFAULT_PROJECT_ID,
+      projectId: item.projectId || item.namespace || DEFAULT_PROJECT_ID,
+      projectName: item.projectName || resolveProjectName(item.namespace || DEFAULT_PROJECT_ID),
+    }));
   const users = normalizeUsers(raw.users);
   const favorites = normalizeFavorites(raw.favorites, users, submissions);
   const ratings = normalizeRatings(raw.ratings, users, submissions);
@@ -1746,9 +2927,12 @@ function buildSeedUser({
   return {
     id: randomUUID(),
     username,
+    email: "",
     displayName,
     passwordHash: hashPassword(password, getAdminCredentials().sessionSecret),
     role: "user",
+    roleLabel: "成员",
+    organization: "",
     createdAt,
     createdBy,
     disabled: false,
@@ -1760,12 +2944,15 @@ function mapSubmissions(rows: DbSubmission[]) {
 }
 
 function mapSubmission(row: DbSubmission): SubmissionRecord {
+  const projectId = row.namespace || DEFAULT_PROJECT_ID;
   return {
     id: row.id,
     slug: row.slug,
     displayName: row.displayName,
     version: row.version,
-    namespace: row.namespace,
+    namespace: projectId,
+    projectId,
+    projectName: resolveProjectName(projectId),
     summary: row.summary,
     description: row.description,
     changelog: row.changelog,
@@ -1804,9 +2991,12 @@ function mapUser(row: DbUser): UserRecord {
   return {
     id: row.id,
     username: row.username,
+    email: row.email || "",
     displayName: row.displayName,
     passwordHash: row.passwordHash,
     role: row.role,
+    roleLabel: row.roleLabel || "成员",
+    organization: row.organization || "",
     createdAt: row.createdAt.toISOString(),
     createdBy: row.createdBy ?? undefined,
     disabled: row.disabled,

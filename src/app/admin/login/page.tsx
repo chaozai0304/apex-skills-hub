@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 import { AppShell } from "@/components/app-shell";
 import { getAdminCredentials } from "@/lib/config";
 import { pick } from "@/lib/i18n";
@@ -56,6 +58,13 @@ export default async function AdminLoginPage({ searchParams }: AdminLoginPagePro
             {pick(locale, "登录控制台", "Sign in to console")}
           </button>
         </form>
+
+        <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 px-5 py-4 text-sm text-slate-600">
+          项目管理员请使用普通账号登录：
+          <Link href={`/login?next=${encodeURIComponent(resolvedSearchParams.next || "/admin")}`} className="ml-2 font-semibold text-sky-700 hover:text-sky-800">
+            前往项目管理员登录
+          </Link>
+        </div>
       </section>
     </AppShell>
   );

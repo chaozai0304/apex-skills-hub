@@ -13,10 +13,46 @@ export type ApprovalLogAction =
   | "password-changed";
 
 export type GitLabSyncConfig = {
+  id?: string;
+  name?: string;
   enabled: boolean;
   repositoryTreeUrl: string;
   branch: string;
   token: string;
+  adminUserIds?: string[];
+  notifyEmails?: string[];
+};
+
+export type GitLabSyncProject = Required<Pick<GitLabSyncConfig, "id" | "name" | "enabled" | "repositoryTreeUrl" | "branch" | "token">> & {
+  adminUserIds: string[];
+  notifyEmails: string[];
+};
+
+export type FeishuNotificationConfig = {
+  enabled: boolean;
+  appId: string;
+  appSecret: string;
+  chatId: string;
+};
+
+export type FeishuNotificationSummary = {
+  enabled: boolean;
+  appId: string;
+  hasAppSecret: boolean;
+  maskedAppSecret?: string;
+  chatId: string;
+  updatedAt?: string;
+  storageReady?: boolean;
+  issue?: string;
+};
+
+export type ProjectOption = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  projectPath?: string;
+  branch?: string;
+  basePath?: string;
 };
 
 export type GitLabBranchOption = {
@@ -25,17 +61,22 @@ export type GitLabBranchOption = {
 };
 
 export type GitLabSyncConfigSummary = {
+  id?: string;
+  name?: string;
   enabled: boolean;
   repositoryTreeUrl: string;
   branch: string;
   hasToken: boolean;
   maskedToken?: string;
+  adminUserIds?: string[];
+  notifyEmails?: string[];
   updatedAt?: string;
   projectPath?: string;
   basePath?: string;
   storageReady?: boolean;
   issue?: string;
   availableBranches?: GitLabBranchOption[];
+  projects?: GitLabSyncConfigSummary[];
 };
 
 export type GitLabSyncResult = {
@@ -67,6 +108,8 @@ export type SubmissionRecord = {
   displayName: string;
   version: string;
   namespace: string;
+  projectId: string;
+  projectName: string;
   summary: string;
   description: string;
   changelog: string;
@@ -96,9 +139,12 @@ export type SubmissionRecord = {
 export type UserRecord = {
   id: string;
   username: string;
+  email: string;
   displayName: string;
   passwordHash: string;
   role: UserRole;
+  roleLabel: string;
+  organization: string;
   createdAt: string;
   createdBy?: string;
   disabled?: boolean;
@@ -155,6 +201,8 @@ export type CatalogItem = {
   stars: number;
   featured: boolean;
   fileCount: number;
+  projectId: string;
+  projectName: string;
 };
 
 export type SkillDetail = {
@@ -171,6 +219,8 @@ export type SkillEngagementSummary = {
 };
 
 export type UserDashboardData = {
+  submissions: SubmissionRecord[];
+  reviewSubmissions: SubmissionRecord[];
   favorites: SubmissionRecord[];
   ratings: Array<{
     submission: SubmissionRecord;
