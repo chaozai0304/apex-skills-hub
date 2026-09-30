@@ -186,7 +186,7 @@ export default async function SkillDetailPage({ params, searchParams }: SkillPag
               <div className="space-y-3">
                 {detail.versions.map((version, index) => (
                   <div key={version.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_10px_30px_-28px_rgba(15,23,42,0.35)]">
-                    <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                    <div>
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2 text-base font-semibold text-slate-950">
                           {version.version}
@@ -209,12 +209,6 @@ export default async function SkillDetailPage({ params, searchParams }: SkillPag
                         <p className="mt-2 text-xs leading-6 text-slate-600">{version.changelog || pick(locale, "暂无更新说明", "No changelog provided")}</p>
                       </div>
 
-                      <a
-                        href={`/api/download/${version.id}`}
-                        className="button-secondary h-9 shrink-0 px-4 text-xs"
-                      >
-                        {pick(locale, "下载该版本", "Download this version")}
-                      </a>
                     </div>
                   </div>
                 ))}

@@ -19,12 +19,36 @@ export function InstallCommand({
   const [copied, setCopied] = useState(false);
   const isLight = variant === "light";
 
+  function fallbackCopyText(text: string) {
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "true");
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    textarea.style.pointerEvents = "none";
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    const copiedByExecCommand = document.execCommand("copy");
+    document.body.removeChild(textarea);
+    return copiedByExecCommand;
+  }
+
   async function handleCopy() {
     try {
-      await navigator.clipboard.writeText(command);
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(command);
+      } else if (!fallbackCopyText(command)) {
+        throw new Error("copy-failed");
+      }
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1800);
     } catch {
+      if (fallbackCopyText(command)) {
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1800);
+        return;
+      }
       setCopied(false);
     }
   }

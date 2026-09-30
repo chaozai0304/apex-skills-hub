@@ -66,6 +66,8 @@ const DEFAULT_PROJECT_ID = "global";
 const DEFAULT_PROJECT_NAME = "默认项目";
 const SUPER_ADMIN_PROJECT_ADMIN_ID = "__superadmin__";
 const REMOVED_TEST_SUBMISSION_IDS = new Set(["76558742-5817-4d0b-9a91-8a485eaff921"]);
+const DEFAULT_PENDING_CHANGELOG = "首个候选版本，等待管理员审批发布。";
+const DEFAULT_RELEASE_CHANGELOG = "首次发布。";
 
 let initPromise: Promise<void> | null = null;
 let projectNameCache = new Map<string, string>([[DEFAULT_PROJECT_ID, DEFAULT_PROJECT_NAME]]);
@@ -256,7 +258,7 @@ export async function getSkillDetail(slug: string): Promise<SkillDetail | null> 
       where: { slug, status: "published" },
       orderBy: { updatedAt: "desc" },
     }),
-  );
+  ).sort(comparePublishedVersions);
 
   if (!versions.length) {
     return null;
@@ -561,10 +563,9 @@ export async function getPublishedSubmission(slug: string, version?: string) {
   await ensureStore();
   const submission = version
     ? await db.submission.findUnique({ where: { slug_version: { slug, version } } })
-    : await db.submission.findFirst({
-        where: { slug, status: "published" },
-        orderBy: { updatedAt: "desc" },
-      });
+    : (await db.submission.findMany({ where: { slug, status: "published" } })).sort(
+        comparePublishedDbVersions,
+      )[0];
 
   if (!submission || submission.status !== "published") {
     return null;
@@ -612,7 +613,7 @@ export async function createSubmission(input: CreateSubmissionInput) {
       namespace: project.id,
       summary: archiveMeta.summary,
       description: archiveMeta.description,
-      changelog: input.changelog.trim() || "首个候选版本，等待管理员审批发布。",
+      changelog: input.changelog.trim() || DEFAULT_PENDING_CHANGELOG,
       category: input.category.trim() || "通用",
       tags: splitTags(input.tags),
       authorName: input.authorName.trim(),
@@ -764,6 +765,7 @@ export async function reviewSubmission(
 
   const now = new Date();
   const data: {
+    changelog?: string;
     reviewedAt: Date;
     updatedAt: Date;
     reviewNotes: string | null;
@@ -777,6 +779,10 @@ export async function reviewSubmission(
     status: decision === "approve" ? "published" : "rejected",
     publishedAt: decision === "approve" ? now : null,
   };
+
+  if (decision === "approve" && target.changelog === DEFAULT_PENDING_CHANGELOG) {
+    data.changelog = DEFAULT_RELEASE_CHANGELOG;
+  }
 
   let feishuNotification: FeishuNotificationResult = {
     attempted: false,
@@ -1080,7 +1086,7 @@ export async function switchSkillProject(id: string, nextProjectId: string, acto
 
   const latestPublished = siblings
     .filter((item) => item.status === "published")
-    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())[0];
+    .sort(comparePublishedDbVersions)[0];
   if (latestPublished) {
     try {
       gitLabSync = await synchronizeApprovedSubmissionToGitLab({
@@ -1132,7 +1138,6 @@ export async function incrementDownload(id: string) {
         downloads: { increment: 1 },
         installsCurrent: { increment: 1 },
         installsAllTime: { increment: 1 },
-        updatedAt: new Date(),
       },
     });
     return mapSubmission(updated);
@@ -1688,6 +1693,24 @@ function getCatalogScore(item: CatalogItem, keyword: string) {
   return score;
 }
 
+function getPublishedTime(entry: Pick<SubmissionRecord, "publishedAt" | "createdAt">) {
+  const value = entry.publishedAt ?? entry.createdAt;
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function comparePublishedVersions(a: SubmissionRecord, b: SubmissionRecord) {
+  return getPublishedTime(b) - getPublishedTime(a)
+    || new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    || b.version.localeCompare(a.version);
+}
+
+function comparePublishedDbVersions(a: { publishedAt: Date | null; createdAt: Date; version: string }, b: { publishedAt: Date | null; createdAt: Date; version: string }) {
+  return (b.publishedAt ?? b.createdAt).getTime() - (a.publishedAt ?? a.createdAt).getTime()
+    || b.createdAt.getTime() - a.createdAt.getTime()
+    || b.version.localeCompare(a.version);
+}
+
 function getLatestPublishedBySlug(submissions: SubmissionRecord[]): CatalogItem[] {
   const latestMap = new Map<string, SubmissionRecord>();
 
@@ -1697,7 +1720,7 @@ function getLatestPublishedBySlug(submissions: SubmissionRecord[]): CatalogItem[
     }
 
     const current = latestMap.get(entry.slug);
-    if (!current || new Date(entry.updatedAt).getTime() > new Date(current.updatedAt).getTime()) {
+    if (!current || comparePublishedVersions(entry, current) < 0) {
       latestMap.set(entry.slug, entry);
     }
   }
@@ -1711,7 +1734,7 @@ function getLatestPublishedBySlug(submissions: SubmissionRecord[]): CatalogItem[
     tags: entry.tags,
     authorName: entry.authorName,
     version: entry.version,
-    updatedAt: entry.updatedAt,
+    updatedAt: entry.publishedAt ?? entry.updatedAt,
     downloads: entry.downloads,
     installsCurrent: entry.installsCurrent,
     installsAllTime: entry.installsAllTime,

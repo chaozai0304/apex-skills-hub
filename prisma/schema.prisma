@@ -73,6 +73,7 @@ model Submission {
   frontmatter     Json
 
   @@index([slug, status])
+  @@index([slug, status, publishedAt])
   @@index([status, updatedAt])
   @@unique([slug, version])
 }

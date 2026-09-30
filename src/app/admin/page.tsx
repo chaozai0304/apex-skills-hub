@@ -503,10 +503,21 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
           ) : null}
 
           {activeTab === "skills" ? (
-            <table className="min-w-full divide-y divide-slate-200 text-sm text-slate-600">
+            <table className="min-w-full table-fixed divide-y divide-slate-200 text-sm text-slate-600">
+              <colgroup>
+                <col className="w-[18%]" />
+                <col className="w-[10%]" />
+                <col className="w-[12%]" />
+                <col className="w-[11%]" />
+                <col className="w-[7%]" />
+                <col className="w-[11%]" />
+                <col className="w-[5%]" />
+                <col className="w-[26%]" />
+              </colgroup>
               <thead className="bg-slate-50/90 text-left text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
                 <tr>
                   <th className="px-4 py-3">技能</th>
+                  <th className="px-4 py-3">版本</th>
                   <th className="px-4 py-3">状态</th>
                   <th className="px-4 py-3">项目</th>
                   <th className="px-4 py-3">分类</th>
@@ -520,70 +531,63 @@ export default async function AdminPage({ searchParams }: AdminPageProps) {
                   paginatedSkills.items.map((item) => (
                     <tr key={item.slug} className="align-top hover:bg-slate-50/70">
                       <td className="px-4 py-4">
-                        <div className="font-semibold text-slate-950">{item.displayName}</div>
-                        <div className="mt-1 text-xs text-slate-500">
-                          {item.slug} · 最新 {item.latestVersion} · 共 {item.versionCount} 个版本
-                        </div>
-                        <p className="mt-1 max-w-sm truncate text-xs text-slate-500">{item.summary}</p>
+                        <Link href={`/skills/${item.slug}`} className="font-semibold text-slate-950 transition hover:text-sky-700">
+                          {item.displayName}
+                        </Link>
+                        <div className="mt-1 text-xs text-slate-500">{item.slug}</div>
+                        <p className="mt-1 line-clamp-1 max-w-sm text-xs text-slate-500">{item.summary}</p>
                       </td>
-                      <td className="px-4 py-4 whitespace-nowrap">
+                      <td className="px-4 py-4 whitespace-nowrap text-xs text-slate-500">
+                        <div className="font-semibold text-slate-800">最新 {item.latestVersion}</div>
+                        <div className="mt-1">共 {item.versionCount} 个版本</div>
+                      </td>
+                      <td className="px-4 py-4">
                         <StatusBadge status={item.status} />
-                        <div className="mt-2 text-xs text-slate-500">
-                          已发布 {item.publishedCount} · 待审批 {item.pendingCount} · 已驳回 {item.rejectedCount}
+                        <div className="mt-1.5 text-[11px] text-slate-500">
+                          发{item.publishedCount} / 审{item.pendingCount} / 驳{item.rejectedCount}
                         </div>
                       </td>
-                      <td className="px-4 py-4 min-w-[12rem]">
-                        <div className="mb-2 rounded-full bg-sky-50 px-2.5 py-1 text-center text-xs font-semibold text-sky-700">{item.projectName}</div>
-                        <form action={`/api/admin/skills/${item.id}/project`} method="post" className="grid gap-1.5">
-                          <input type="hidden" name="redirectTo" value={currentAdminHref} />
-                          <select name="projectId" defaultValue={item.projectId} className="field-input h-10 text-xs">
-                            {accessibleProjects.map((project) => (
-                              <option key={project.id} value={project.id}>{project.name}</option>
-                            ))}
-                          </select>
-                          <button type="submit" className="button-secondary h-9 px-3 text-xs">切换项目并同步</button>
-                        </form>
+                      <td className="px-4 py-4">
+                        <div className="inline-flex max-w-full items-center rounded-full bg-sky-50 px-2.5 py-1 text-xs font-semibold text-sky-700">
+                          <span className="truncate">{item.projectName}</span>
+                        </div>
                       </td>
-                      <td className="px-4 py-4 whitespace-nowrap">{item.category}</td>
+                      <td className="px-4 py-4 whitespace-nowrap text-xs">{item.category}</td>
                       <td className="px-4 py-4 whitespace-nowrap text-slate-500">{formatDateTime(item.updatedAt)}</td>
                       <td className="px-4 py-4 whitespace-nowrap">{item.totalDownloads}</td>
-                      <td className="px-4 py-4 min-w-[16rem]">
-                        <details className="mb-2 rounded-xl border border-slate-200 bg-slate-50/80 p-2">
-                          <summary className="cursor-pointer list-none text-xs font-semibold text-slate-700">
+                      <td className="px-3 py-3">
+                        <div className="grid gap-1.5">
+                          <Link href={`/skills/${item.slug}?tab=versions`} className="button-secondary inline-flex h-8 items-center justify-center px-2 text-[11px] whitespace-nowrap">
                             查看版本详情
-                          </summary>
-                          <div className="mt-2 max-h-48 space-y-2 overflow-y-auto">
-                            {item.versions.map((version) => (
-                              <div key={version.id} className="rounded-xl border border-slate-200 bg-white px-3 py-2">
-                                <div className="flex items-center justify-between gap-2">
-                                  <div className="min-w-0">
-                                    <div className="truncate text-xs font-semibold text-slate-900">{version.version}</div>
-                                    <div className="mt-0.5 text-[11px] text-slate-500">
-                                      {formatDateTime(version.updatedAt)} · 文件 {version.fileCount} · 下载 {version.downloads}
-                                    </div>
-                                  </div>
-                                  <StatusBadge status={version.status} />
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </details>
-                        <form action={`/api/admin/skills/${item.id}/delete`} method="post" className="grid gap-2">
-                          <input type="hidden" name="redirectTo" value={currentAdminHref} />
-                          <label className="flex items-start gap-2 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-[11px] leading-4 text-slate-600">
-                            <input type="checkbox" name="deleteFromGitLab" className="mt-0.5 h-4 w-4 rounded border-slate-300" />
-                            <span>同步删除 GitLab 镜像</span>
-                          </label>
-                          <button type="submit" className="inline-flex h-8 items-center justify-center gap-1.5 rounded-full bg-rose-600 px-3 text-xs font-semibold text-white transition hover:bg-rose-500">
-                            <Trash2 className="h-3.5 w-3.5" />
-                            删除整组技能
-                          </button>
-                        </form>
+                          </Link>
+
+                          <form action={`/api/admin/skills/${item.id}/project`} method="post" className="flex items-center gap-1.5">
+                            <input type="hidden" name="redirectTo" value={currentAdminHref} />
+                            <select name="projectId" defaultValue={item.projectId} className="field-input h-8 min-w-0 flex-1 text-xs">
+                              {accessibleProjects.map((project) => (
+                                <option key={project.id} value={project.id}>{project.name}</option>
+                              ))}
+                            </select>
+                            <button type="submit" className="button-secondary h-8 shrink-0 px-2 text-[11px] whitespace-nowrap">同步</button>
+                          </form>
+
+                          <form action={`/api/admin/skills/${item.id}/delete`} method="post" className="flex items-center gap-1.5" data-loading-message="正在删除技能...">
+                            <input type="hidden" name="redirectTo" value={currentAdminHref} />
+                            <label className="inline-flex min-w-0 flex-1 items-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-2 py-1.5 text-[11px] leading-4 text-slate-600">
+                              <input type="hidden" name="deleteFromGitLab" value="0" />
+                              <input type="checkbox" name="deleteFromGitLab" value="1" className="h-4 w-4 shrink-0 rounded border-slate-300" />
+                              <span className="truncate whitespace-nowrap">同步清理 GitLab 镜像</span>
+                            </label>
+                            <button type="submit" className="inline-flex h-8 shrink-0 items-center justify-center gap-1 rounded-full bg-rose-600 px-2 text-[11px] font-semibold text-white transition hover:bg-rose-500 whitespace-nowrap">
+                              <Trash2 className="h-3.5 w-3.5" />删除
+                            </button>
+                          </form>
+                        </div>
                       </td>
                     </tr>
                   ))
                 ) : (
-                  <EmptyRow colSpan={7} text={query ? "没有匹配的技能记录。" : "当前没有技能记录。"} />
+                  <EmptyRow colSpan={8} text={query ? "没有匹配的技能记录。" : "当前没有技能记录。"} />
                 )}
               </tbody>
             </table>
